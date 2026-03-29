@@ -2,6 +2,7 @@ package collector
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -26,6 +27,10 @@ func CollectLogs(filepath string, out chan<- models.LogEntry) error {
 		}
 	}
 
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
 	// Step2: Move cursor to end of the line
 	_, err = file.Seek(0, io.SeekEnd)
 	if err != nil {
@@ -38,8 +43,7 @@ func CollectLogs(filepath string, out chan<- models.LogEntry) error {
 		return err
 	}
 	defer watcher.Close()
-	err1 := watcher.Add(filepath)
-	if err1 != nil {
+	if err := watcher.Add(filepath); err != nil {
 		return err
 	}
 
@@ -48,20 +52,32 @@ func CollectLogs(filepath string, out chan<- models.LogEntry) error {
 	// Step4: Watch for new logs
 	for {
 		select {
-		case event := <-watcher.Events:
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return nil
+			}
 			if event.Op&fsnotify.Write == fsnotify.Write {
 				for {
 					line, err := reader.ReadString('\n')
 					if err != nil {
-						break
+						if errors.Is(err, io.EOF) {
+							break
+						}
+						return err
 					}
 					line = strings.TrimSpace(line)
+					if line == "" {
+						continue
+					}
 					out <- models.LogEntry{
 						Message: line,
 					}
 				}
 			}
-		case err := <-watcher.Errors:
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return nil
+			}
 			return err
 		}
 	}
