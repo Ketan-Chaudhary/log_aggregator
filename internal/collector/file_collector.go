@@ -61,11 +61,18 @@ func CollectLogs(filepath string, out chan<- models.LogEntry) error {
 					line, err := reader.ReadString('\n')
 					if err != nil {
 						if errors.Is(err, io.EOF) {
+							if len(line) > 0 {
+								line = strings.TrimRight(line, "\r\n")
+
+								out <- models.LogEntry{
+									Message: line,
+								}
+							}
 							break
 						}
 						return err
 					}
-					line = strings.TrimSpace(line)
+					line = strings.TrimRight(line, "\r\n")
 					if line == "" {
 						continue
 					}
