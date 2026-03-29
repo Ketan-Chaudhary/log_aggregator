@@ -2,9 +2,12 @@ package collector
 
 import (
 	"bufio"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/Ketan-Chaudhary/log_aggregator/pkg/models"
+	"github.com/fsnotify/fsnotify"
 )
 
 func CollectLogs(filepath string, out chan<- models.LogEntry) error {
@@ -13,17 +16,53 @@ func CollectLogs(filepath string, out chan<- models.LogEntry) error {
 		return err
 	}
 	defer file.Close()
-	defer close(out)
 
+	// Step1: Read existing CollectLogs()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		line := scanner.Text()
-
-		log := models.LogEntry{
-			Message: line,
+		out <- models.LogEntry{
+			Message: scanner.Text(),
 		}
-		out <- log
 	}
-	return scanner.Err()
+
+	// Step2: Move cursor to end of the line
+	_, err = file.Seek(0, io.SeekEnd)
+	if err != nil {
+		return err
+	}
+
+	// Step3: Setup Watcher
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	defer watcher.Close()
+	err1 := watcher.Add(filepath)
+	if err1 != nil {
+		return err
+	}
+
+	reader := bufio.NewReader(file)
+
+	// Step4: Watch for new logs
+	for {
+		select {
+		case event := <-watcher.Events:
+			if event.Op&fsnotify.Write == fsnotify.Write {
+				for {
+					line, err := reader.ReadString('\n')
+					if err != nil {
+						break
+					}
+					line = strings.TrimSpace(line)
+					out <- models.LogEntry{
+						Message: line,
+					}
+				}
+			}
+		case err := <-watcher.Errors:
+			return err
+		}
+	}
 }
 
