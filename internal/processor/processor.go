@@ -7,7 +7,6 @@ import (
 )
 
 func ProcessLogs(in <-chan models.LogEntry, out chan<- models.LogEntry) {
-	defer close(out)
 	for log := range in {
 		log.Timestamp = time.Now()
 		log.Source = "app-log"

@@ -10,8 +10,8 @@ import (
 )
 
 func main() {
-	rawLogs := make(chan models.LogEntry)
-	processedLogs := make(chan models.LogEntry)
+	rawLogs := make(chan models.LogEntry, 100)
+	processedLogs := make(chan models.LogEntry, 100)
 
 	go func() {
 		err := collector.CollectLogs("app.log", rawLogs)
