@@ -6,7 +6,7 @@ import (
 	"github.com/Ketan-Chaudhary/log_aggregator/pkg/models"
 )
 
-func ProcessLogs(in <-chan models.LogEntry, out chan<- models.LogEntry) {
+func Worker(id int, in <-chan models.LogEntry, out chan<- models.LogEntry) {
 	for log := range in {
 		log.Timestamp = time.Now()
 		log.Source = "app-log"
