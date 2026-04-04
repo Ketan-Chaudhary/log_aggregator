@@ -20,7 +20,8 @@ func main() {
 		}
 	}()
 
-	go processor.ProcessLogs(rawLogs, processedLogs)
+	numWorkers := 2
+	processor.StartWorkerPool(numWorkers, rawLogs, processedLogs)
 
 	output.WriteLogs(processedLogs)
 }
