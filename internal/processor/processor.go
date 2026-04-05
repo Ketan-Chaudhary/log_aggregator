@@ -10,7 +10,7 @@ import (
 func Worker(id int, in <-chan models.LogEntry, out chan<- models.LogEntry) {
 	for log := range in {
 		log.Timestamp = time.Now()
-		log.Source = fmt.Sprintf("Worker-%d", id)
+		log.Source = fmt.Sprintf("worker-%d", id)
 
 		out <- log
 	}

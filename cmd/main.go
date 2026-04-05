@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/collector"
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/output"
@@ -23,5 +24,11 @@ func main() {
 	numWorkers := 2
 	processor.StartWorkerPool(numWorkers, rawLogs, processedLogs)
 
-	output.WriteLogs(processedLogs)
+	esOutput := output.NewElasticsearchOutput(
+		"logs-index",
+		3,
+		5*time.Second,
+	)
+	esOutput.Run(processedLogs)
+	//output.WriteLogs(processedLogs)
 }
