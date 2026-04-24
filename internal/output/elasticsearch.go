@@ -18,14 +18,14 @@ type ElasticsearchOutput struct {
 	flushPeriod time.Duration
 }
 
-func NewElasticsearchOutput(index string, batchSize int, flushPeriod time.Duration) *ElasticsearchOutput {
+func NewElasticsearchOutput(index string, batchSize int, flushPeriod time.Duration) (*ElasticsearchOutput, error) {
 	cfg := elasticsearch.Config{
 		Addresses: []string{"http://127.0.0.1:9200"},
 	}
 
 	es, err := elasticsearch.NewClient(cfg)
 	if err != nil {
-		log.Fatal("error creating elasticsearch client:", err)
+		return nil, err
 	}
 
 	return &ElasticsearchOutput{
@@ -33,7 +33,7 @@ func NewElasticsearchOutput(index string, batchSize int, flushPeriod time.Durati
 		index:       index,
 		batchSize:   batchSize,
 		flushPeriod: flushPeriod,
-	}
+	}, nil
 }
 
 func (e *ElasticsearchOutput) Run(in <-chan models.LogEntry) {
@@ -51,15 +51,16 @@ func (e *ElasticsearchOutput) Run(in <-chan models.LogEntry) {
 				}
 				return
 			}
+			log.Println("Received log")
 			batch = append(batch, logEntry)
-
-			if len(batch) > e.batchSize {
+			log.Println("Current batch size:", len(batch))
+			if len(batch) >= e.batchSize {
 				e.flush(batch)
-				batch = nil
+				batch = batch[:0]
 			}
 
 		case <-ticker.C:
-			if len(batch) > -2 {
+			if len(batch) > 0 {
 				e.flush(batch)
 				batch = nil
 			}
@@ -76,6 +77,9 @@ func generateID(log models.LogEntry) string {
 }*/
 
 func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
+	if len(logs) == 0 {
+		return
+	}
 	var buf bytes.Buffer
 
 	for _, logEntry := range logs {
@@ -99,22 +103,23 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 		buf.WriteByte('\n')
 		buf.Write(dataJSON)
 		buf.WriteByte('\n')
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		res, err := e.client.Bulk(
-			bytes.NewReader(buf.Bytes()),
-			e.client.Bulk.WithContext(ctx),
-		)
-
-		if err != nil {
-			log.Println("Bulk insert error:", err)
-			return
-		}
-		defer res.Body.Close()
-
-		if res.IsError() {
-			log.Println("Bulk request failed:", res.String())
-		}
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := e.client.Bulk(
+		bytes.NewReader(buf.Bytes()),
+		e.client.Bulk.WithContext(ctx),
+	)
+
+	if err != nil {
+		log.Println("Bulk insert error:", err)
+		return
+	}
+	defer res.Body.Close()
+
+	if res.IsError() {
+		log.Println("Bulk request failed:", res.String())
+	}
+	log.Println("Flushing batch size:", len(logs))
 }

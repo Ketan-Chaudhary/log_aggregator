@@ -24,11 +24,14 @@ func main() {
 	numWorkers := 2
 	processor.StartWorkerPool(numWorkers, rawLogs, processedLogs)
 
-	esOutput := output.NewElasticsearchOutput(
+	esOutput, err := output.NewElasticsearchOutput(
 		"logs-index",
-		3,
+		10,
 		5*time.Second,
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 	esOutput.Run(processedLogs)
 	//output.WriteLogs(processedLogs)
 }
