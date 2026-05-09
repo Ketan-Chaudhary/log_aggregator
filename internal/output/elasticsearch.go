@@ -105,21 +105,40 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 		buf.WriteByte('\n')
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	res, err := e.client.Bulk(
-		bytes.NewReader(buf.Bytes()),
-		e.client.Bulk.WithContext(ctx),
-	)
+	maxRetries := 3
+	baseDelay := 500 * time.Millisecond
 
-	if err != nil {
-		log.Println("Bulk insert error:", err)
-		return
-	}
-	defer res.Body.Close()
+	for attempt := 1; attempt <= maxRetries; attempt++ {
 
-	if res.IsError() {
-		log.Println("Bulk request failed:", res.String())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+		res, err := e.client.Bulk(
+			bytes.NewReader(buf.Bytes()),
+			e.client.Bulk.WithContext(ctx),
+		)
+
+		if err == nil && !res.IsError() {
+			res.Body.Close()
+			cancel()
+			log.Println("Flushed batch Size:", len(logs))
+			return
+		}
+
+		if res != nil {
+			res.Body.Close()
+		}
+		cancel()
+
+		log.Printf("bulk attempt %d failed: %v\n", attempt, err)
+
+		if attempt == maxRetries {
+			log.Println("dropping batch after max retires")
+			return
+		}
+
+		// Exponential Backoff
+		delay := time.Duration(attempt) * baseDelay
+		log.Println("retrying in:", delay)
+		time.Sleep(delay)
 	}
-	log.Println("Flushing batch size:", len(logs))
 }
