@@ -82,6 +82,7 @@ func (e *ElasticsearchOutput) Run(in <-chan models.LogEntry) {
 					batchCopy := append([]models.LogEntry(nil), batch...)
 					go e.flush(batchCopy)
 				}
+				close(e.sendQueue)
 				return
 			}
 
@@ -108,7 +109,7 @@ func (e *ElasticsearchOutput) Run(in <-chan models.LogEntry) {
 				batchCopy := append([]models.LogEntry(nil), batch...)
 
 				// async flush
-				go e.flush(batchCopy)
+				e.sendQueue <- batchCopy
 
 				// reset batch
 				batch = batch[:0]
