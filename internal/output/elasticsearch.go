@@ -18,6 +18,8 @@ type ElasticsearchOutput struct {
 	index       string
 	batchSize   int
 	flushPeriod time.Duration
+
+	sendQueue chan []models.LogEntry
 }
 
 func NewElasticsearchOutput(
@@ -35,12 +37,32 @@ func NewElasticsearchOutput(
 		return nil, err
 	}
 
-	return &ElasticsearchOutput{
+	output := &ElasticsearchOutput{
 		client:      es,
 		index:       index,
 		batchSize:   batchSize,
 		flushPeriod: flushPeriod,
-	}, nil
+		sendQueue:   make(chan []models.LogEntry, 100),
+	}
+
+	for i := 0; i < 3; i++ {
+		go output.senderWorker(i)
+	}
+
+	return output, nil
+}
+
+func (e *ElasticsearchOutput) senderWorker(id int) {
+	log.Printf("sender worker %d started", id)
+
+	for batch := range e.sendQueue {
+		log.Printf(
+			"Sender worker %d processing batch size=%d",
+			id,
+			len(batch),
+		)
+		e.flush(batch)
+	}
 }
 
 func (e *ElasticsearchOutput) Run(in <-chan models.LogEntry) {
@@ -73,7 +95,7 @@ func (e *ElasticsearchOutput) Run(in <-chan models.LogEntry) {
 				batchCopy := append([]models.LogEntry(nil), batch...)
 
 				// async flush
-				go e.flush(batchCopy)
+				e.sendQueue <- batchCopy
 
 				// reset batch
 				batch = batch[:0]
