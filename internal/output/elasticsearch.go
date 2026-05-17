@@ -123,11 +123,29 @@ func (e *ElasticsearchOutput) Run(in <-chan models.LogEntry) {
 	}
 }
 
-func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
+type BulkResponse struct {
+	Errors bool                  `json:"errors"`
+	Items  []map[string]BulkItem `json:"items"`
+}
 
-	if len(logs) == 0 {
-		return
+type BulkItem struct {
+	Status int         `json:"status"`
+	Error  interface{} `json:"error,omitempty"`
+}
+
+func isRetryableStatus(status int) bool {
+	switch status {
+	case 429, 500, 502, 503, 504:
+		return true
+
+	default:
+		return false
 	}
+}
+
+func (e *ElasticsearchOutput) buildBulkBody(
+	logs []models.LogEntry,
+) (*bytes.Buffer, error) {
 
 	var buf bytes.Buffer
 
@@ -141,20 +159,28 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 
 		metaJSON, err := json.Marshal(meta)
 		if err != nil {
-			log.Println("failed to marshal metadata:", err)
-			continue
+			return nil, err
 		}
 
 		dataJSON, err := json.Marshal(logEntry)
 		if err != nil {
-			log.Println("failed to marshal log entry:", err)
-			continue
+			return nil, err
 		}
 
 		buf.Write(metaJSON)
 		buf.WriteByte('\n')
+
 		buf.Write(dataJSON)
 		buf.WriteByte('\n')
+	}
+
+	return &buf, nil
+}
+
+func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
+
+	if len(logs) == 0 {
+		return
 	}
 
 	maxRetries := 3
@@ -167,23 +193,79 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 			5*time.Second,
 		)
 
+		buf, buildErr := e.buildBulkBody(logs)
+		if buildErr != nil {
+			log.Println("failed to build bulk request:", buildErr)
+			return
+		}
+
 		res, err := e.client.Bulk(
 			bytes.NewReader(buf.Bytes()),
 			e.client.Bulk.WithContext(ctx),
 		)
 
 		// success
-		if err == nil && res != nil && !res.IsError() {
+		if err == nil && res != nil {
+			var bulkResp BulkResponse
 
-			log.Printf(
-				"successfully flushed batch of size %d",
-				len(logs),
-			)
+			if decodeErr := json.NewDecoder(res.Body).Decode(&bulkResp); decodeErr != nil {
+				log.Println("failed to decode bulk response:", decodeErr)
+
+				res.Body.Close()
+				cancel()
+				return
+			}
 
 			res.Body.Close()
 			cancel()
 
-			return
+			// complete success
+			if !bulkResp.Errors && !res.IsError() {
+				log.Printf(
+					"successfully flushed batch of size %d",
+					len(logs),
+				)
+				return
+			}
+
+			// partial failures
+			var retryLogs []models.LogEntry
+
+			for idx, item := range bulkResp.Items {
+				for _, result := range item {
+					status := result.Status
+
+					if status >= 200 && status < 300 {
+						continue
+					}
+
+					log.Printf(
+						"bulk items failed: status=%d error=%v",
+						status,
+						result.Error,
+					)
+
+					if isRetryableStatus(status) {
+						if idx < len(logs) {
+							retryLogs = append(retryLogs, logs[idx])
+						}
+					}
+				}
+			}
+
+			// if everything failed
+			if len(retryLogs) == 0 {
+				log.Println("no retryable documents left")
+				return
+			}
+
+			// retry only failed docs
+			log.Printf(
+				"retrying %d failed documents",
+				len(retryLogs),
+			)
+			logs = retryLogs
+			continue
 		}
 
 		// detailed ES error logging
