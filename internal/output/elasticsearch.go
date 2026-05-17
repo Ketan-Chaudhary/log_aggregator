@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/Ketan-Chaudhary/log_aggregator/pkg/models"
@@ -18,6 +19,7 @@ type ElasticsearchOutput struct {
 	index       string
 	batchSize   int
 	flushPeriod time.Duration
+	wg          sync.WaitGroup
 
 	sendQueue chan []models.LogEntry
 }
@@ -46,6 +48,7 @@ func NewElasticsearchOutput(
 	}
 
 	for i := 0; i < 3; i++ {
+		output.wg.Add(1)
 		go output.senderWorker(i)
 	}
 
@@ -53,6 +56,7 @@ func NewElasticsearchOutput(
 }
 
 func (e *ElasticsearchOutput) senderWorker(id int) {
+	defer e.wg.Done()
 	log.Printf("sender worker %d started", id)
 
 	for batch := range e.sendQueue {
@@ -80,9 +84,10 @@ func (e *ElasticsearchOutput) Run(in <-chan models.LogEntry) {
 			if !ok {
 				if len(batch) > 0 {
 					batchCopy := append([]models.LogEntry(nil), batch...)
-					go e.flush(batchCopy)
+					e.sendQueue <- batchCopy
 				}
 				close(e.sendQueue)
+				e.wg.Wait()
 				return
 			}
 
