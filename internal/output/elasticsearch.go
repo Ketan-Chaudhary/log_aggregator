@@ -230,6 +230,7 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 
 			// partial failures
 			var retryLogs []models.LogEntry
+			droppedCount := 0
 
 			for idx, item := range bulkResp.Items {
 				for _, result := range item {
@@ -249,13 +250,26 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 						if idx < len(logs) {
 							retryLogs = append(retryLogs, logs[idx])
 						}
+					} else {
+						droppedCount++
 					}
 				}
 			}
 
+			// log permanently dropped documents
+			if droppedCount > 0 {
+				log.Printf(
+					"permanently dropped %d documents with non-retryable failures",
+					droppedCount,
+				)
+			}
+
 			// if everything failed
 			if len(retryLogs) == 0 {
-				log.Println("no retryable documents left")
+				log.Printf(
+					"no retryable documents left (dropped %d)",
+					droppedCount,
+				)
 				return
 			}
 
