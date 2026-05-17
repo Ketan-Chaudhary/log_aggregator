@@ -256,14 +256,6 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 				}
 			}
 
-			// log permanently dropped documents
-			if droppedCount > 0 {
-				log.Printf(
-					"permanently dropped %d documents with non-retryable failures",
-					droppedCount,
-				)
-			}
-
 			// if everything failed
 			if len(retryLogs) == 0 {
 				if droppedCount > 0 {
@@ -275,6 +267,14 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 					log.Println("no retryable documents left")
 				}
 				return
+			}
+
+			// log dropped documents when retrying
+			if droppedCount > 0 {
+				log.Printf(
+					"permanently dropped %d documents with non-retryable failures",
+					droppedCount,
+				)
 			}
 
 			// retry only failed docs
