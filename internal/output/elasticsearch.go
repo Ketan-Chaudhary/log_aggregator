@@ -204,8 +204,8 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 			e.client.Bulk.WithContext(ctx),
 		)
 
-		// success
-		if err == nil && res != nil {
+		// success or partial per-item failures on a non-error bulk response
+		if err == nil && res != nil && !res.IsError() {
 			var bulkResp BulkResponse
 
 			if decodeErr := json.NewDecoder(res.Body).Decode(&bulkResp); decodeErr != nil {
@@ -220,7 +220,7 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 			cancel()
 
 			// complete success
-			if !bulkResp.Errors && !res.IsError() {
+			if !bulkResp.Errors {
 				log.Printf(
 					"successfully flushed batch of size %d",
 					len(logs),
