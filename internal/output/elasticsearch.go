@@ -258,13 +258,11 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 
 			// if everything failed
 			if len(retryLogs) == 0 {
+				msg := "no retryable documents left"
 				if droppedCount > 0 {
-					log.Printf(
-						"no retryable documents left, permanently dropped %d documents",
-						droppedCount,
-					)
+					log.Printf("%s, permanently dropped %d documents", msg, droppedCount)
 				} else {
-					log.Println("no retryable documents left")
+					log.Println(msg)
 				}
 				return
 			}
