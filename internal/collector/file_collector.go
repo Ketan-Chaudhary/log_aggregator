@@ -2,6 +2,7 @@ package collector
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -11,33 +12,14 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-func CollectLogs(filepath string, out chan<- models.LogEntry) error {
+func CollectLogs(ctx context.Context, filepath string, out chan<- models.LogEntry) error {
 	file, err := os.Open(filepath)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	// Step1: Read existing CollectLogs()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		out <- models.LogEntry{
-			Message: scanner.Text(),
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-
-	// Step2: Move cursor to end of the line
-	_, err = file.Seek(0, io.SeekEnd)
-	if err != nil {
-		return err
-	}
-
-	// Step3: Setup Watcher
+	// Setup Watcher before reading to avoid race condition
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
@@ -48,10 +30,37 @@ func CollectLogs(filepath string, out chan<- models.LogEntry) error {
 	}
 
 	reader := bufio.NewReader(file)
+	var buffer string
 
-	// Step4: Watch for new logs
+	// Read existing content
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				buffer += line // Save partial read
+				break
+			}
+			return err
+		}
+		
+		fullLine := buffer + line
+		buffer = ""
+		fullLine = strings.TrimRight(fullLine, "\r\n")
+		
+		if fullLine != "" {
+			select {
+			case out <- models.LogEntry{Message: fullLine}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+
+	// Watch for new logs
 	for {
 		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return nil
@@ -61,23 +70,24 @@ func CollectLogs(filepath string, out chan<- models.LogEntry) error {
 					line, err := reader.ReadString('\n')
 					if err != nil {
 						if errors.Is(err, io.EOF) {
-							if len(line) > 0 {
-								line = strings.TrimRight(line, "\r\n")
-
-								out <- models.LogEntry{
-									Message: line,
-								}
-							}
+							buffer += line // Buffer partial lines
 							break
 						}
 						return err
 					}
-					line = strings.TrimRight(line, "\r\n")
-					if line == "" {
+					
+					fullLine := buffer + line
+					buffer = ""
+					fullLine = strings.TrimRight(fullLine, "\r\n")
+					
+					if fullLine == "" {
 						continue
 					}
-					out <- models.LogEntry{
-						Message: line,
+					
+					select {
+					case out <- models.LogEntry{Message: fullLine}:
+					case <-ctx.Done():
+						return ctx.Err()
 					}
 				}
 			}

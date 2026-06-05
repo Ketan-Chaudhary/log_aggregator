@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/rand"
 	"sync"
@@ -25,18 +26,28 @@ type ElasticsearchOutput struct {
 }
 
 func NewElasticsearchOutput(
+	urls []string,
 	index string,
 	batchSize int,
 	flushPeriod time.Duration,
 ) (*ElasticsearchOutput, error) {
 
 	cfg := elasticsearch.Config{
-		Addresses: []string{"http://127.0.0.1:9200"},
+		Addresses: urls,
 	}
 
 	es, err := elasticsearch.NewClient(cfg)
 	if err != nil {
 		return nil, err
+	}
+
+	res, err := es.Info()
+	if err != nil {
+		return nil, fmt.Errorf("error pinging ES: %s", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return nil, fmt.Errorf("ES responded with error: %s", res.String())
 	}
 
 	output := &ElasticsearchOutput{
