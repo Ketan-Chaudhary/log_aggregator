@@ -207,6 +207,7 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 		buf, buildErr := e.buildBulkBody(logs)
 		if buildErr != nil {
 			log.Println("failed to build bulk request:", buildErr)
+			cancel()
 			return
 		}
 
