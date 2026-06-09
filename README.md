@@ -29,7 +29,7 @@
 
 ## 🚀 About the Project
 
-**Log Aggregator** is a lightweight, concurrent logging agent designed to continuously monitor local log files, intelligently parse structured JSON logs, and reliably ship them in bulk to an Elasticsearch cluster. Built entirely in Go, it features a minimal footprint while ensuring robust data guarantees (no partial log writes, graceful shutdown mechanisms, and resilient network backoff logic).
+**Log Aggregator** is a lightweight, concurrent logging agent designed to continuously monitor local log files, intelligently parse structured JSON or plain-text logs, and reliably ship them to pluggable outputs (like Elasticsearch). Built entirely in Go, it features a minimal footprint while ensuring robust data guarantees (no partial log writes, state tracking to avoid duplicate reads, graceful shutdown mechanisms, and resilient network backoff logic).
 
 This project aims to serve as a reliable drop-in sidecar container or host daemon for containerized microservices or bare-metal applications.
 
@@ -41,41 +41,44 @@ The log aggregator uses a decoupled, channel-driven architecture to maintain hig
 
 ```mermaid
 flowchart LR
-    File[(App Log File)] -- "fsnotify events" --> Collector(File Collector)
-    Collector -- "raw string" --> RawChan((Raw\nChannel))
+    Files[(Log Files)] -- "fsnotify & Glob" --> Manager(Collector Manager)
+    Manager -- "spawn" --> Collector(File Collector)
+    Collector <--> BM[(Bookmarks)]
+    Collector -- "models.LogEntry" --> RawChan((Raw\nChannel))
     
     RawChan --> Worker1[Worker Goroutine]
-    RawChan --> Worker2[Worker Goroutine]
     RawChan --> WorkerN[Worker Goroutine]
     
-    Worker1 -- "JSON parsing" --> ParsedChan((Parsed\nChannel))
-    Worker2 -- "JSON parsing" --> ParsedChan
-    WorkerN -- "JSON parsing" --> ParsedChan
+    Worker1 -- "JSON / Regex" --> ParsedChan((Parsed\nChannel))
+    WorkerN -- "JSON / Regex" --> ParsedChan
     
-    ParsedChan --> ESBatcher{ES Batcher}
-    ESBatcher -- "Bulk API Flush" --> ES[(Elasticsearch)]
+    ParsedChan --> Output{Output Plugin}
+    Output -- "Stdout" --> Console
+    Output -- "Bulk API Flush" --> ES[(Elasticsearch)]
 
     %% Styling
     classDef io fill:#f9f,stroke:#333,stroke-width:2px;
     classDef channel fill:#bbf,stroke:#333,stroke-width:2px,shape:circle;
-    class File,ES io;
+    class Files,ES,BM io;
     class RawChan,ParsedChan channel;
 ```
 
 ### Components
-1. **Collector (`file_collector.go`)**: Attaches an `fsnotify` watcher to the target file. Handles EOF partial string buffering to prevent data corruption during rapid log flushing.
-2. **Processor Pool (`pool.go`, `processor.go`)**: A dynamically scaled worker pool that ingests raw log strings, unmarshals the JSON data, and enriches it with time and context before sending it to the output.
-3. **Elasticsearch Output (`elasticsearch.go`)**: Aggregates processed logs into configurable batch sizes. Automatically retries transient failures with exponential backoff and jitter.
+1. **Collector Manager (`manager.go`, `file_collector.go`)**: Attaches an `fsnotify` watcher to the target files, supporting multiple glob patterns. Handles file rotation and EOF partial string buffering.
+2. **State Tracker (`bookmark.go`)**: Keeps track of exactly how many bytes have been read from each file. If the aggregator crashes or restarts, it seamlessly resumes exactly where it left off, avoiding duplicate logs.
+3. **Processor Pool (`pool.go`, `processor.go`)**: A dynamically scaled worker pool that ingests raw log strings, unmarshals the JSON data (or falls back to Regex parsing), and enriches it with time and context.
+4. **Pluggable Output (`output.go`)**: Logs are sent to the configured destination. The **Elasticsearch Output** automatically retries transient failures with exponential backoff and jitter, while the **Stdout Output** provides easy local debugging.
 
 ---
 
 ## ✨ Features
 
-- **Graceful Shutdown**: Intercepts `SIGINT`/`SIGTERM` to coordinate a clean termination. Active pipelines are flushed to Elasticsearch, ensuring zero dropped logs.
-- **Robust Tailing**: Handles partial line writes safely without splitting JSON strings in half.
-- **Auto-Discovery**: Validates the Elasticsearch connection with an early `.Ping()` on boot to fail-fast if configurations are incorrect.
-- **Dynamic Workers**: Adjust the number of goroutines mapping/parsing JSON on the fly depending on CPU availability.
-- **Bulk Operations**: Batches log requests to reduce HTTP overhead and maximize Elasticsearch indexing throughput.
+- **Multi-File Tailing**: Monitor an unlimited number of files or directories concurrently via Glob pattern matching (e.g., `*.log`).
+- **State Bookmarking**: Aggregator state is safely flushed to a local `bookmarks.json` file. Reboots will not cause duplicate event ingestion.
+- **Pluggable Outputs**: Read logs from files and output them directly to Elasticsearch or standard out.
+- **Regex Parsing Fallback**: If a log line isn't valid JSON, the worker pool can dynamically parse plain text logs using named Regex capture groups.
+- **Graceful Shutdown**: Intercepts `SIGINT`/`SIGTERM` to coordinate a clean termination. Active pipelines are flushed to output, and bookmarks are saved ensuring zero dropped logs.
+- **Robust Log Rotation**: Resilient to log rotation policies. Gracefully detects `Rename` and `Remove` events and reopens log files securely.
 
 ---
 
@@ -84,7 +87,7 @@ flowchart LR
 ### Prerequisites
 
 * Go 1.20+
-* An active instance of Elasticsearch (v8.x or v9.x)
+* (Optional) An active instance of Elasticsearch (v8.x or v9.x)
 
 ### Installation
 
@@ -105,37 +108,71 @@ go build -o log_aggregator cmd/main.go
 
 ## 💻 Usage
 
-Start the agent by providing your log file path and Elasticsearch cluster URLs.
+Start the agent by providing the path to your configuration file, or override settings using command-line flags.
 
 ```bash
-./log_aggregator -workers 4 -file "/var/log/my_app.log" -es "http://127.0.0.1:9200"
+# Run with a configuration file
+./log_aggregator -config config.json
+
+# Override settings with CLI flags
+./log_aggregator -config config.json -workers 8 -file "/var/log/my_app.log"
 ```
 
 To gracefully stop the agent, send a `SIGINT` (e.g. `Ctrl+C`). It will output:
 ```text
-2026/06/05 23:12:34 Received termination signal, shutting down...
-2026/06/05 23:12:34 Shutdown complete.
+2026/06/09 02:12:34 Received termination signal, shutting down...
+2026/06/09 02:12:35 Shutdown complete.
 ```
 
 ---
 
 ## ⚙️ Configuration
 
-Settings are controlled via command-line flags. 
+Settings are fully controlled via a `config.json` file. You can also override specific values using CLI flags.
 
-| Flag | Default | Description |
-| :--- | :--- | :--- |
-| `-file` | `app.log` | The absolute or relative path to the local log file to monitor. |
-| `-es` | `http://127.0.0.1:9200` | A comma-separated list of Elasticsearch node URLs. |
-| `-workers` | `2` | The number of background goroutines to allocate for parsing JSON log strings. |
+| Flag | Description |
+| :--- | :--- |
+| `-config` | Path to the config file (defaults to `config.json`). |
+| `-file` | Adds a local file path to monitor (appended to paths in `config.json`). |
+| `-es` | A comma-separated list of Elasticsearch node URLs (overrides config). |
+| `-workers` | The number of background goroutines to allocate (overrides config). |
 
-> **Note**: For massive log throughput, increasing `-workers` will improve JSON marshaling speed at the cost of CPU usage.
+### Example `config.json`
+
+```json
+{
+  "collector": {
+    "paths": ["app.log", "test.log", "/var/log/*.log"],
+    "bookmark_file": "bookmarks.json"
+  },
+  "processor": {
+    "workers": 4,
+    "regex_patterns": [
+      "(?P<timestamp>\\S+ \\S+) \\[(?P<level>[A-Z]+)\\] (?P<msg>.*)"
+    ]
+  },
+  "output": {
+    "type": "elasticsearch", 
+    "elasticsearch": {
+      "urls": ["http://127.0.0.1:9200"],
+      "index": "logs-index",
+      "batch_size": 100,
+      "flush_period_ms": 5000
+    }
+  }
+}
+```
+
+> **Note**: Set `output.type` to `"stdout"` if you want to print logs to the terminal instead of sending them to Elasticsearch.
 
 ---
 
 ## 📄 Log Format
 
-The aggregator expects individual lines in the target file to be valid JSON strings. By default, the internal processor (`models.LogEntry`) attempts to extract the following fields:
+The aggregator expects individual lines in the target file to be valid JSON strings, but it supports Regex Fallbacks.
+
+### JSON Logs
+By default, the internal processor (`models.LogEntry`) attempts to extract the following fields from JSON:
 
 ```json
 {
@@ -146,8 +183,11 @@ The aggregator expects individual lines in the target file to be valid JSON stri
 }
 ```
 
-* If a `timestamp` field is missing or invalid, the aggregator will fallback to stamping the log with the current ingestion time.
-* If the line is purely raw text (not valid JSON), the aggregator will wrap the line entirely inside the `message` field and forward it.
+### Regex Logs
+If the line is purely raw text (not valid JSON), the aggregator will attempt to apply the `regex_patterns` specified in the configuration. Use named capture groups (e.g., `(?P<level>INFO)`) to map matches to `level`, `request_id`, and `timestamp` fields.
+
+* If a `timestamp` field is missing or invalid in both approaches, the aggregator will fallback to stamping the log with the current ingestion time.
+* The original unparsed line is always safely preserved inside the `message` field.
 
 ---
 
