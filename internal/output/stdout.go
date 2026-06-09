@@ -8,11 +8,17 @@ import (
 	"github.com/Ketan-Chaudhary/log_aggregator/pkg/models"
 )
 
-func WriteLogs(in <-chan models.LogEntry) {
-	for log := range in {
-		data, err := json.Marshal(log)
+type StdoutOutput struct{}
+
+func NewStdoutOutput() *StdoutOutput {
+	return &StdoutOutput{}
+}
+
+func (s *StdoutOutput) Run(in <-chan models.LogEntry) {
+	for logEntry := range in {
+		data, err := json.Marshal(logEntry)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "failed to marshal logs:", err)
+			fmt.Fprintf(os.Stderr, "Error marshaling log: %v\n", err)
 			continue
 		}
 		fmt.Println(string(data))

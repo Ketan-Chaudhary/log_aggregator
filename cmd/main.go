@@ -6,28 +6,23 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
-	"time"
 
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/collector"
+	"github.com/Ketan-Chaudhary/log_aggregator/internal/config"
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/output"
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/processor"
 	"github.com/Ketan-Chaudhary/log_aggregator/pkg/models"
 )
 
 func main() {
-	var (
-		filePath   string
-		esURLsStr  string
-		numWorkers int
-	)
-	flag.StringVar(&filePath, "file", "app.log", "Path to log file")
-	flag.StringVar(&esURLsStr, "es", "http://127.0.0.1:9200", "Comma-separated Elasticsearch URLs")
-	flag.IntVar(&numWorkers, "workers", 2, "Number of processor workers")
+	configPath := flag.String("config", "config.json", "Path to config file")
 	flag.Parse()
 
-	esURLs := strings.Split(esURLsStr, ",")
+	cfg, err := config.LoadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config from %s: %v", *configPath, err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -43,18 +38,22 @@ func main() {
 	rawLogs := make(chan models.LogEntry, 100)
 	processedLogs := make(chan models.LogEntry, 100)
 
-	// Start Collector
+	// Initialize BookmarkManager
+	bm, err := collector.NewBookmarkManager(cfg.Collector.BookmarkFile)
+	if err != nil {
+		log.Fatalf("Failed to initialize bookmark manager: %v", err)
+	}
+
+	// Start Collector Manager
+	collectorManager := collector.NewManager(cfg.Collector.Paths, bm, rawLogs)
 	go func() {
 		defer close(rawLogs)
-		err := collector.CollectLogs(ctx, filePath, rawLogs)
-		if err != nil && err != context.Canceled {
-			log.Printf("Collector error: %v", err)
-		}
+		collectorManager.Run(ctx)
 	}()
 
 	// Start Processor Pool
-	workerWg := processor.StartWorkerPool(numWorkers, rawLogs, processedLogs)
-	
+	workerWg := processor.StartWorkerPool(cfg.Processor, rawLogs, processedLogs)
+
 	// Close processedLogs when all workers are done
 	go func() {
 		workerWg.Wait()
@@ -62,21 +61,20 @@ func main() {
 	}()
 
 	// Start Output
-	esOutput, err := output.NewElasticsearchOutput(
-		esURLs,
-		"logs-index",
-		10,
-		5*time.Second,
-	)
+	out, err := output.NewOutput(cfg.Output)
 	if err != nil {
-		log.Fatal("Failed to initialize ES output: ", err)
+		log.Fatalf("Failed to initialize output: %v", err)
 	}
-	
+
 	log.Println("Log aggregator started successfully. Press Ctrl+C to stop.")
-	
-	// This will block until processedLogs is closed, which happens after workers finish,
-	// which happens after rawLogs is closed, which happens after collector stops.
-	esOutput.Run(processedLogs)
+
+	// Blocks until processedLogs is closed
+	out.Run(processedLogs)
+
+	// Flush bookmarks on exit
+	if err := bm.Flush(); err != nil {
+		log.Printf("Failed to flush bookmarks: %v", err)
+	}
 
 	log.Println("Shutdown complete.")
 }
