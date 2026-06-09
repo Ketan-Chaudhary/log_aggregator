@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/collector"
@@ -17,12 +18,27 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config.json", "Path to config file")
+	filePath := flag.String("file", "", "Path to log file (adds to config paths)")
+	esURLsStr := flag.String("es", "", "Comma-separated Elasticsearch URLs (overrides config)")
+	numWorkers := flag.Int("workers", 0, "Number of processor workers (overrides config)")
 	flag.Parse()
 
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config from %s: %v", *configPath, err)
 	}
+
+	// Override config with CLI flags if provided
+	if *filePath != "" {
+		cfg.Collector.Paths = append(cfg.Collector.Paths, *filePath)
+	}
+	if *esURLsStr != "" {
+		cfg.Output.Elasticsearch.URLs = strings.Split(*esURLsStr, ",")
+	}
+	if *numWorkers > 0 {
+		cfg.Processor.Workers = *numWorkers
+	}
+
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
