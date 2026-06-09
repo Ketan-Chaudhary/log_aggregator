@@ -13,9 +13,9 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-func CollectLogs(ctx context.Context, filepath string, out chan<- models.LogEntry) error {
+func CollectFile(ctx context.Context, filepath string, out chan<- models.LogEntry, bm *BookmarkManager) error {
 	for {
-		err := watchFile(ctx, filepath, out)
+		err := watchFile(ctx, filepath, out, bm)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return err
@@ -26,7 +26,7 @@ func CollectLogs(ctx context.Context, filepath string, out chan<- models.LogEntr
 			case <-time.After(1 * time.Second):
 			}
 		} else {
-			// wait a little before re-opening to avoid CPU spinning if rotation is fast
+			// file was rotated, delay a bit to avoid CPU spin
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -36,7 +36,7 @@ func CollectLogs(ctx context.Context, filepath string, out chan<- models.LogEntr
 	}
 }
 
-func watchFile(ctx context.Context, filepath string, out chan<- models.LogEntry) error {
+func watchFile(ctx context.Context, filepath string, out chan<- models.LogEntry, bm *BookmarkManager) error {
 	file, err := os.Open(filepath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -60,6 +60,23 @@ func watchFile(ctx context.Context, filepath string, out chan<- models.LogEntry)
 		return err
 	}
 
+	// Seek to bookmark if it exists
+	var currentOffset int64
+	if bm != nil {
+		currentOffset = bm.GetOffset(filepath)
+		if currentOffset > 0 {
+			stat, err := file.Stat()
+			if err == nil {
+				if stat.Size() < currentOffset {
+					// File truncated, reset offset
+					currentOffset = 0
+				} else {
+					file.Seek(currentOffset, 0)
+				}
+			}
+		}
+	}
+
 	reader := bufio.NewReader(file)
 	var buffer string
 
@@ -74,6 +91,8 @@ func watchFile(ctx context.Context, filepath string, out chan<- models.LogEntry)
 				return err
 			}
 			
+			currentOffset += int64(len(line))
+			
 			fullLine := buffer + line
 			buffer = ""
 			fullLine = strings.TrimRight(fullLine, "\r\n")
@@ -86,6 +105,11 @@ func watchFile(ctx context.Context, filepath string, out chan<- models.LogEntry)
 				}
 			}
 		}
+		
+		if bm != nil {
+			bm.SaveOffset(filepath, currentOffset)
+		}
+		
 		return nil
 	}
 
@@ -107,7 +131,6 @@ func watchFile(ctx context.Context, filepath string, out chan<- models.LogEntry)
 				}
 			}
 			if event.Op&fsnotify.Rename == fsnotify.Rename || event.Op&fsnotify.Remove == fsnotify.Remove {
-				// file was rotated, close and reopen
 				return nil
 			}
 		case err, ok := <-watcher.Errors:

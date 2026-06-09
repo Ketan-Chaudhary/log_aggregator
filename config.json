@@ -1,0 +1,24 @@
+{
+  "collector": {
+    "paths": [
+      "app.log",
+      "test.log"
+    ],
+    "bookmark_file": "bookmarks.json"
+  },
+  "processor": {
+    "workers": 4,
+    "regex_patterns": [
+      "(?P<timestamp>\\S+ \\S+) \\[(?P<level>[A-Z]+)\\] (?P<msg>.*)"
+    ]
+  },
+  "output": {
+    "type": "stdout",
+    "elasticsearch": {
+      "urls": ["http://127.0.0.1:9200"],
+      "index": "logs-index",
+      "batch_size": 100,
+      "flush_period_ms": 5000
+    }
+  }
+}
