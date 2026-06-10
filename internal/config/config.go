@@ -2,7 +2,9 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -18,8 +20,12 @@ type CollectorConfig struct {
 }
 
 type ProcessorConfig struct {
-	Workers       int      `json:"workers"`
-	RegexPatterns []string `json:"regex_patterns"`
+	Workers       int               `json:"workers"`
+	RegexPatterns []string          `json:"regex_patterns"`
+	MinLevel      string            `json:"min_level"`
+	DropRegexes   []string          `json:"drop_regexes"`
+	Labels        map[string]string `json:"labels"`
+	LabelMode     string            `json:"label_mode"` // "nested" or "flattened"
 }
 
 type OutputConfig struct {
@@ -50,6 +56,9 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Processor.Workers == 0 {
 		cfg.Processor.Workers = 2
 	}
+	if cfg.Processor.LabelMode == "" {
+		cfg.Processor.LabelMode = "nested"
+	}
 	if cfg.Collector.BookmarkFile == "" {
 		cfg.Collector.BookmarkFile = "bookmarks.json"
 	}
@@ -61,6 +70,20 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	// Convert milliseconds to duration
 	cfg.Output.Elasticsearch.FlushPeriod = cfg.Output.Elasticsearch.FlushPeriod * time.Millisecond
+
+	// Normalize and validate MinLevel
+	if cfg.Processor.MinLevel != "" {
+		cfg.Processor.MinLevel = strings.ToUpper(strings.TrimSpace(cfg.Processor.MinLevel))
+		validLevels := map[string]bool{"DEBUG": true, "INFO": true, "WARN": true, "ERROR": true, "FATAL": true}
+		if !validLevels[cfg.Processor.MinLevel] {
+			return nil, fmt.Errorf("invalid min_level in config: %q (valid: DEBUG, INFO, WARN, ERROR, FATAL)", cfg.Processor.MinLevel)
+		}
+	}
+
+	// Validate LabelMode
+	if cfg.Processor.LabelMode != "nested" && cfg.Processor.LabelMode != "flattened" {
+		return nil, fmt.Errorf("invalid label_mode in config: %q (valid: nested, flattened)", cfg.Processor.LabelMode)
+	}
 
 	return &cfg, nil
 }

@@ -74,9 +74,13 @@ flowchart LR
 ## ✨ Features
 
 - **Multi-File Tailing**: Monitor an unlimited number of files or directories concurrently via Glob pattern matching (e.g., `*.log`).
-- **State Bookmarking**: Aggregator state is safely flushed to a local `bookmarks.json` file. Reboots will not cause duplicate event ingestion.
-- **Pluggable Outputs**: Read logs from files and output them directly to Elasticsearch or standard out.
+- **State Bookmarking**: Aggregator state is periodically flushed to a local `bookmarks.json` file. Reboots will not cause duplicate event ingestion.
+- **Pluggable Outputs**: Ship logs to Elasticsearch or print them to stdout for local debugging.
 - **Regex Parsing Fallback**: If a log line isn't valid JSON, the worker pool can dynamically parse plain text logs using named Regex capture groups.
+- **Log Filtering**: Drop noisy logs before they ever reach the output:
+  - **Severity Filtering**: Set a `min_level` (e.g., `INFO`) to automatically discard `DEBUG` logs. Unknown/unparseable levels are treated as severity `0` and dropped when a minimum is set.
+  - **Drop Regexes**: Define regex patterns to silently discard logs matching specific strings (e.g., `healthcheck`, `metric_ping`).
+- **Log Enrichment**: Inject static key-value labels (e.g., `environment`, `service`) into every log entry, with support for both **nested** and **flattened** output modes.
 - **Graceful Shutdown**: Intercepts `SIGINT`/`SIGTERM` to coordinate a clean termination. Active pipelines are flushed to output, and bookmarks are saved ensuring zero dropped logs.
 - **Robust Log Rotation**: Resilient to log rotation policies. Gracefully detects `Rename` and `Remove` events and reopens log files securely.
 
@@ -130,6 +134,8 @@ To gracefully stop the agent, send a `SIGINT` (e.g. `Ctrl+C`). It will output:
 
 Settings are fully controlled via a `config.json` file. You can also override specific values using CLI flags.
 
+### CLI Flags
+
 | Flag | Description |
 | :--- | :--- |
 | `-config` | Path to the config file (defaults to `config.json`). |
@@ -137,22 +143,32 @@ Settings are fully controlled via a `config.json` file. You can also override sp
 | `-es` | A comma-separated list of Elasticsearch node URLs (overrides config). |
 | `-workers` | The number of background goroutines to allocate (overrides config). |
 
-### Example `config.json`
+### Full `config.json` Reference
 
 ```json
 {
   "collector": {
-    "paths": ["app.log", "test.log", "/var/log/*.log"],
+    "paths": ["app.log", "/var/log/*.log"],
     "bookmark_file": "bookmarks.json"
   },
   "processor": {
     "workers": 4,
+    "min_level": "INFO",
+    "drop_regexes": [
+      "healthcheck",
+      "metric_ping"
+    ],
+    "labels": {
+      "environment": "production",
+      "service": "backend"
+    },
+    "label_mode": "flattened",
     "regex_patterns": [
       "(?P<timestamp>\\S+ \\S+) \\[(?P<level>[A-Z]+)\\] (?P<msg>.*)"
     ]
   },
   "output": {
-    "type": "elasticsearch", 
+    "type": "elasticsearch",
     "elasticsearch": {
       "urls": ["http://127.0.0.1:9200"],
       "index": "logs-index",
@@ -163,7 +179,78 @@ Settings are fully controlled via a `config.json` file. You can also override sp
 }
 ```
 
-> **Note**: Set `output.type` to `"stdout"` if you want to print logs to the terminal instead of sending them to Elasticsearch.
+### Config Options
+
+#### `collector`
+
+| Key | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `paths` | `string[]` | *required* | List of file paths or glob patterns to monitor (e.g., `"*.log"`, `"/var/log/app.log"`). |
+| `bookmark_file` | `string` | `"bookmarks.json"` | Path to the file where read offsets are persisted. Used to resume after restarts. |
+
+#### `processor`
+
+| Key | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `workers` | `int` | `2` | Number of concurrent goroutines for parsing and filtering logs. |
+| `min_level` | `string` | `""` (disabled) | Minimum log severity to keep. Logs below this level are dropped. Valid values: `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`. Case-insensitive. |
+| `drop_regexes` | `string[]` | `[]` | List of regex patterns. If a raw log line matches any pattern, it is silently dropped before parsing. |
+| `labels` | `object` | `{}` | Static key-value pairs injected into every log entry (e.g., `{"environment": "production"}`). |
+| `label_mode` | `string` | `"nested"` | How labels appear in the output JSON. `"nested"` puts them under a `"labels"` key; `"flattened"` merges them into the root object. |
+| `regex_patterns` | `string[]` | `[]` | Fallback regex patterns for parsing non-JSON log lines. Use named capture groups: `(?P<level>...)`, `(?P<timestamp>...)`, `(?P<request_id>...)`. |
+
+#### `output`
+
+| Key | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `type` | `string` | *required* | Output destination. Valid values: `"elasticsearch"`, `"stdout"`. |
+
+#### `output.elasticsearch`
+
+| Key | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `urls` | `string[]` | *required* | List of Elasticsearch node URLs. |
+| `index` | `string` | *required* | The Elasticsearch index name to write logs to. |
+| `batch_size` | `int` | `100` | Number of log entries to buffer before flushing a bulk request. |
+| `flush_period_ms` | `int` | `5000` | Maximum time (in milliseconds) to wait before flushing a partial batch. |
+
+### Processing Pipeline
+
+The processor applies operations in this order to maximize CPU efficiency:
+
+```
+1. Raw Drop Regex  →  discard before any parsing
+2. Parse / Extract →  JSON or Regex extraction
+3. Severity Filter →  drop by log level
+4. Enrichment      →  attach static labels
+5. Output          →  send to destination
+```
+
+> **Note**: Enrichment happens *after* filtering to avoid allocating label maps for logs that will be discarded.
+
+### Label Modes
+
+**Nested** (`"label_mode": "nested"`):
+```json
+{
+  "message": "user login",
+  "labels": {
+    "environment": "production",
+    "service": "backend"
+  }
+}
+```
+
+**Flattened** (`"label_mode": "flattened"`):
+```json
+{
+  "message": "user login",
+  "environment": "production",
+  "service": "backend"
+}
+```
+
+> **Warning**: When using `"flattened"` mode, ensure your label keys do not conflict with built-in field names (`timestamp`, `level`, `message`, `source`, `request_id`).
 
 ---
 
@@ -188,6 +275,7 @@ If the line is purely raw text (not valid JSON), the aggregator will attempt to 
 
 * If a `timestamp` field is missing or invalid in both approaches, the aggregator will fallback to stamping the log with the current ingestion time.
 * The original unparsed line is always safely preserved inside the `message` field.
+* If the log level cannot be determined, it is treated as `UNKNOWN` (severity `0`). When `min_level` is set, unknown-level logs will be dropped.
 
 ---
 

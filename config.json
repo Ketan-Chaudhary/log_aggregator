@@ -8,6 +8,16 @@
   },
   "processor": {
     "workers": 4,
+    "min_level": "INFO",
+    "drop_regexes": [
+      "healthcheck",
+      "metric_ping"
+    ],
+    "labels": {
+      "environment": "production",
+      "service": "backend"
+    },
+    "label_mode": "flattened",
     "regex_patterns": [
       "(?P<timestamp>\\S+ \\S+) \\[(?P<level>[A-Z]+)\\] (?P<msg>.*)"
     ]

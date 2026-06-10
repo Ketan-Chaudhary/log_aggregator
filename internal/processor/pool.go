@@ -3,11 +3,37 @@ package processor
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/config"
 	"github.com/Ketan-Chaudhary/log_aggregator/pkg/models"
 )
+
+type ProcessorRuntime struct {
+	MinSeverity    int
+	DropRegexes    []*regexp.Regexp
+	ExtractRegexes []*regexp.Regexp
+	Labels         map[string]string
+	FlattenLabels  bool
+}
+
+var levelMap = map[string]int{
+	"UNKNOWN": 0,
+	"DEBUG":   1,
+	"INFO":    2,
+	"WARN":    3,
+	"ERROR":   4,
+	"FATAL":   5,
+}
+
+func getSeverity(level string) int {
+	level = strings.ToUpper(strings.TrimSpace(level))
+	if val, ok := levelMap[level]; ok {
+		return val
+	}
+	return 0 // UNKNOWN
+}
 
 func StartWorkerPool(cfg config.ProcessorConfig, in <-chan models.LogEntry, out chan<- models.LogEntry) *sync.WaitGroup {
 	numWorkers := cfg.Workers
@@ -16,19 +42,32 @@ func StartWorkerPool(cfg config.ProcessorConfig, in <-chan models.LogEntry, out 
 		numWorkers = 1
 	}
 
-	var compiledRegexes []*regexp.Regexp
+	runtime := &ProcessorRuntime{
+		MinSeverity:   getSeverity(cfg.MinLevel),
+		Labels:        cfg.Labels,
+		FlattenLabels: cfg.LabelMode == "flattened",
+	}
+
 	for _, pattern := range cfg.RegexPatterns {
 		if re, err := regexp.Compile(pattern); err == nil {
-			compiledRegexes = append(compiledRegexes, re)
+			runtime.ExtractRegexes = append(runtime.ExtractRegexes, re)
 		} else {
-			fmt.Printf("Failed to compile regex pattern %s: %v\n", pattern, err)
+			fmt.Printf("Failed to compile extract regex %s: %v\n", pattern, err)
+		}
+	}
+
+	for _, pattern := range cfg.DropRegexes {
+		if re, err := regexp.Compile(pattern); err == nil {
+			runtime.DropRegexes = append(runtime.DropRegexes, re)
+		} else {
+			fmt.Printf("Failed to compile drop regex %s: %v\n", pattern, err)
 		}
 	}
 
 	wg := &sync.WaitGroup{}
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go Worker(wg, compiledRegexes, in, out)
+		go Worker(wg, runtime, in, out)
 	}
 	return wg
 }

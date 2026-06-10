@@ -2,16 +2,30 @@ package processor
 
 import (
 	"encoding/json"
-	"regexp"
 	"sync"
 	"time"
 
 	"github.com/Ketan-Chaudhary/log_aggregator/pkg/models"
 )
 
-func Worker(wg *sync.WaitGroup, regexes []*regexp.Regexp, in <-chan models.LogEntry, out chan<- models.LogEntry) {
+func Worker(wg *sync.WaitGroup, runtime *ProcessorRuntime, in <-chan models.LogEntry, out chan<- models.LogEntry) {
 	defer wg.Done()
 	for log := range in {
+		// 1. Raw Drop Filter
+		dropped := false
+		if len(runtime.DropRegexes) > 0 {
+			for _, re := range runtime.DropRegexes {
+				if re.MatchString(log.Message) {
+					dropped = true
+					break
+				}
+			}
+		}
+		if dropped {
+			continue
+		}
+
+		// 2. Parse / Extract
 		log.Timestamp = time.Now() // default fallback
 
 		var raw map[string]interface{}
@@ -29,7 +43,7 @@ func Worker(wg *sync.WaitGroup, regexes []*regexp.Regexp, in <-chan models.LogEn
 			}
 		} else {
 			// Fallback to Regex Parsing
-			for _, re := range regexes {
+			for _, re := range runtime.ExtractRegexes {
 				match := re.FindStringSubmatch(log.Message)
 				if match != nil {
 					for i, name := range re.SubexpNames() {
@@ -52,6 +66,26 @@ func Worker(wg *sync.WaitGroup, regexes []*regexp.Regexp, in <-chan models.LogEn
 			}
 		}
 
+		// 3. Severity Filter
+		// If MinSeverity is greater than 0, we enforce dropping.
+		// If MinLevel was not set in config, MinSeverity will be 0, so nothing drops.
+		if runtime.MinSeverity > 0 {
+			sev := getSeverity(log.Level)
+			if sev < runtime.MinSeverity {
+				continue
+			}
+		}
+
+		// 4. Enrichment
+		if len(runtime.Labels) > 0 {
+			log.Labels = make(map[string]string, len(runtime.Labels))
+			for k, v := range runtime.Labels {
+				log.Labels[k] = v
+			}
+		}
+		log.FlattenLabels = runtime.FlattenLabels
+
+		// 5. Output
 		out <- log
 	}
 }
