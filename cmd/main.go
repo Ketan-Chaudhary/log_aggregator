@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/collector"
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/config"
@@ -39,7 +40,6 @@ func main() {
 		cfg.Processor.Workers = *numWorkers
 	}
 
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -59,6 +59,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize bookmark manager: %v", err)
 	}
+
+	// Start periodic bookmark flushing (every 5 seconds, final flush on shutdown)
+	go bm.StartPeriodicFlush(ctx, 5*time.Second)
 
 	// Start Collector Manager
 	collectorManager := collector.NewManager(cfg.Collector.Paths, bm, rawLogs)
@@ -86,11 +89,6 @@ func main() {
 
 	// Blocks until processedLogs is closed
 	out.Run(processedLogs)
-
-	// Flush bookmarks on exit
-	if err := bm.Flush(); err != nil {
-		log.Printf("Failed to flush bookmarks: %v", err)
-	}
 
 	log.Println("Shutdown complete.")
 }
