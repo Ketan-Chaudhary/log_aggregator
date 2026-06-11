@@ -12,6 +12,8 @@ type Config struct {
 	Collector CollectorConfig `json:"collector"`
 	Processor ProcessorConfig `json:"processor"`
 	Output    OutputConfig    `json:"output"`
+	StatsPort int             `json:"stats_port"`
+	DLQPath   string          `json:"dlq_path"`
 }
 
 type CollectorConfig struct {
@@ -53,6 +55,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	
 	// Apply defaults
+	if cfg.StatsPort == 0 {
+		cfg.StatsPort = 8080
+	}
+	if cfg.DLQPath == "" {
+		cfg.DLQPath = "dead_letters.jsonl"
+	}
 	if cfg.Processor.Workers == 0 {
 		cfg.Processor.Workers = 2
 	}

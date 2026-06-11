@@ -5,12 +5,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Ketan-Chaudhary/log_aggregator/internal/metrics"
 	"github.com/Ketan-Chaudhary/log_aggregator/pkg/models"
 )
 
 func Worker(wg *sync.WaitGroup, runtime *ProcessorRuntime, in <-chan models.LogEntry, out chan<- models.LogEntry) {
 	defer wg.Done()
 	for log := range in {
+		metrics.Global.LogsReceived.Add(1)
 		// 1. Raw Drop Filter
 		dropped := false
 		if len(runtime.DropRegexes) > 0 {
@@ -22,6 +24,7 @@ func Worker(wg *sync.WaitGroup, runtime *ProcessorRuntime, in <-chan models.LogE
 			}
 		}
 		if dropped {
+			metrics.Global.LogsDroppedRegex.Add(1)
 			continue
 		}
 
@@ -72,6 +75,7 @@ func Worker(wg *sync.WaitGroup, runtime *ProcessorRuntime, in <-chan models.LogE
 		if runtime.MinSeverity > 0 {
 			sev := getSeverity(log.Level)
 			if sev < runtime.MinSeverity {
+				metrics.Global.LogsDroppedSeverity.Add(1)
 				continue
 			}
 		}
@@ -86,6 +90,7 @@ func Worker(wg *sync.WaitGroup, runtime *ProcessorRuntime, in <-chan models.LogE
 		log.FlattenLabels = runtime.FlattenLabels
 
 		// 5. Output
+		metrics.Global.LogsFlushedToOutput.Add(1)
 		out <- log
 	}
 }

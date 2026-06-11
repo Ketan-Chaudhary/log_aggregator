@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Ketan-Chaudhary/log_aggregator/internal/metrics"
 	"github.com/Ketan-Chaudhary/log_aggregator/pkg/models"
 	"github.com/elastic/go-elasticsearch/v9"
 	"github.com/elastic/go-elasticsearch/v9/esapi"
@@ -21,6 +22,7 @@ type ElasticsearchOutput struct {
 	batchSize   int
 	flushPeriod time.Duration
 	wg          sync.WaitGroup
+	dlq         *DLQ
 
 	sendQueue chan []models.LogEntry
 }
@@ -30,6 +32,7 @@ func NewElasticsearchOutput(
 	index string,
 	batchSize int,
 	flushPeriod time.Duration,
+	dlq *DLQ,
 ) (*ElasticsearchOutput, error) {
 
 	cfg := elasticsearch.Config{
@@ -55,6 +58,7 @@ func NewElasticsearchOutput(
 		index:       index,
 		batchSize:   batchSize,
 		flushPeriod: flushPeriod,
+		dlq:         dlq,
 		sendQueue:   make(chan []models.LogEntry, 100),
 	}
 
@@ -263,6 +267,10 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 							retryLogs = append(retryLogs, logs[idx])
 						}
 					} else {
+						// Non-retryable: send to DLQ
+						if e.dlq != nil && idx < len(logs) {
+							e.dlq.Write(logs[idx], fmt.Sprintf("non-retryable ES error: status=%d", status))
+						}
 						droppedCount++
 					}
 				}
@@ -321,13 +329,17 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 
 		// retry decision
 		if !shouldRetry(res, err) {
-			log.Println("non-retryable error, dropping batch")
+			log.Println("non-retryable error, sending batch to DLQ")
+			metrics.Global.ESFlushErrors.Add(1)
+			e.sendToDLQ(logs, "non-retryable bulk request error")
 			return
 		}
 
 		// max retries reached
 		if attempt == maxRetries {
-			log.Println("dropping batch after max retries")
+			log.Println("max retries reached, sending batch to DLQ")
+			metrics.Global.ESFlushErrors.Add(1)
+			e.sendToDLQ(logs, "max retries exhausted")
 			return
 		}
 
@@ -365,5 +377,15 @@ func shouldRetry(res *esapi.Response, err error) bool {
 
 	default:
 		return false
+	}
+}
+
+func (e *ElasticsearchOutput) sendToDLQ(logs []models.LogEntry, reason string) {
+	if e.dlq == nil {
+		log.Printf("DLQ not configured, permanently dropping %d logs", len(logs))
+		return
+	}
+	for _, entry := range logs {
+		e.dlq.Write(entry, reason)
 	}
 }

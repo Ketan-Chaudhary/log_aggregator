@@ -1,4 +1,6 @@
 {
+  "stats_port": 8080,
+  "dlq_path": "dead_letters.jsonl",
   "collector": {
     "paths": [
       "app.log",
