@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/config"
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/output"
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/processor"
+	"github.com/Ketan-Chaudhary/log_aggregator/internal/server"
 	"github.com/Ketan-Chaudhary/log_aggregator/pkg/models"
 )
 
@@ -51,6 +53,17 @@ func main() {
 		cancel()
 	}()
 
+	// Initialize Dead Letter Queue
+	dlq, err := output.NewDLQ(cfg.DLQPath)
+	if err != nil {
+		log.Fatalf("Failed to initialize DLQ: %v", err)
+	}
+	defer dlq.Close()
+
+	// Start Stats & Health HTTP Server
+	statsServer := server.New(fmt.Sprintf(":%d", cfg.StatsPort))
+	statsServer.Start(ctx)
+
 	rawLogs := make(chan models.LogEntry, 100)
 	processedLogs := make(chan models.LogEntry, 100)
 
@@ -80,10 +93,13 @@ func main() {
 	}()
 
 	// Start Output
-	out, err := output.NewOutput(cfg.Output)
+	out, err := output.NewOutput(cfg.Output, dlq)
 	if err != nil {
 		log.Fatalf("Failed to initialize output: %v", err)
 	}
+
+	// Mark service as ready
+	statsServer.SetReady(true)
 
 	log.Println("Log aggregator started successfully. Press Ctrl+C to stop.")
 

@@ -22,6 +22,8 @@
 - [Usage](#usage)
 - [Configuration](#configuration)
 - [Log Format](#log-format)
+- [API Endpoints](#api-endpoints)
+- [Dead Letter Queue](#dead-letter-queue)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -55,11 +57,15 @@ flowchart LR
     ParsedChan --> Output{Output Plugin}
     Output -- "Stdout" --> Console
     Output -- "Bulk API Flush" --> ES[(Elasticsearch)]
+    Output -- "Failed logs" --> DLQ[(Dead Letter Queue)]
+
+    HTTP[HTTP Server] -- "/healthz /readyz" --> Health
+    HTTP -- "/stats" --> Metrics[(Atomic Counters)]
 
     %% Styling
     classDef io fill:#f9f,stroke:#333,stroke-width:2px;
     classDef channel fill:#bbf,stroke:#333,stroke-width:2px,shape:circle;
-    class Files,ES,BM io;
+    class Files,ES,BM,DLQ io;
     class RawChan,ParsedChan channel;
 ```
 
@@ -68,6 +74,8 @@ flowchart LR
 2. **State Tracker (`bookmark.go`)**: Keeps track of exactly how many bytes have been read from each file. If the aggregator crashes or restarts, it seamlessly resumes exactly where it left off, avoiding duplicate logs.
 3. **Processor Pool (`pool.go`, `processor.go`)**: A dynamically scaled worker pool that ingests raw log strings, unmarshals the JSON data (or falls back to Regex parsing), and enriches it with time and context.
 4. **Pluggable Output (`output.go`)**: Logs are sent to the configured destination. The **Elasticsearch Output** automatically retries transient failures with exponential backoff and jitter, while the **Stdout Output** provides easy local debugging.
+5. **Dead Letter Queue (`dlq.go`)**: Failed logs that cannot be delivered after max retries are persisted to a local JSONL file instead of being silently dropped.
+6. **Metrics & Health Server (`server.go`, `metrics.go`)**: An HTTP server exposing liveness, readiness, and pipeline metrics endpoints.
 
 ---
 
@@ -81,6 +89,8 @@ flowchart LR
   - **Severity Filtering**: Set a `min_level` (e.g., `INFO`) to automatically discard `DEBUG` logs. Unknown/unparseable levels are treated as severity `0` and dropped when a minimum is set.
   - **Drop Regexes**: Define regex patterns to silently discard logs matching specific strings (e.g., `healthcheck`, `metric_ping`).
 - **Log Enrichment**: Inject static key-value labels (e.g., `environment`, `service`) into every log entry, with support for both **nested** and **flattened** output modes.
+- **Dead Letter Queue**: Logs that fail to be delivered after max retries are written to a local `dead_letters.jsonl` file with failure reasons, ensuring zero data loss.
+- **Health & Metrics Endpoints**: Built-in HTTP server exposes `/healthz` (liveness), `/readyz` (readiness), and `/stats` (pipeline metrics) for monitoring and Kubernetes integration.
 - **Graceful Shutdown**: Intercepts `SIGINT`/`SIGTERM` to coordinate a clean termination. Active pipelines are flushed to output, and bookmarks are saved ensuring zero dropped logs.
 - **Robust Log Rotation**: Resilient to log rotation policies. Gracefully detects `Rename` and `Remove` events and reopens log files securely.
 
@@ -147,6 +157,8 @@ Settings are fully controlled via a `config.json` file. You can also override sp
 
 ```json
 {
+  "stats_port": 8080,
+  "dlq_path": "dead_letters.jsonl",
   "collector": {
     "paths": ["app.log", "/var/log/*.log"],
     "bookmark_file": "bookmarks.json"
@@ -180,6 +192,13 @@ Settings are fully controlled via a `config.json` file. You can also override sp
 ```
 
 ### Config Options
+
+#### Top-Level
+
+| Key | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `stats_port` | `int` | `8080` | Port for the HTTP server exposing `/healthz`, `/readyz`, and `/stats`. |
+| `dlq_path` | `string` | `"dead_letters.jsonl"` | File path for the Dead Letter Queue. Failed logs are appended here as JSONL. |
 
 #### `collector`
 
@@ -276,6 +295,57 @@ If the line is purely raw text (not valid JSON), the aggregator will attempt to 
 * If a `timestamp` field is missing or invalid in both approaches, the aggregator will fallback to stamping the log with the current ingestion time.
 * The original unparsed line is always safely preserved inside the `message` field.
 * If the log level cannot be determined, it is treated as `UNKNOWN` (severity `0`). When `min_level` is set, unknown-level logs will be dropped.
+
+---
+
+## 🔌 API Endpoints
+
+The aggregator exposes an HTTP server (default port `8080`) with the following endpoints:
+
+### `GET /healthz` — Liveness Probe
+
+Returns `200 OK` if the process is alive.
+
+```json
+{"status": "alive"}
+```
+
+### `GET /readyz` — Readiness Probe
+
+Returns `200 OK` if the output pipeline is connected and ready. Returns `503 Service Unavailable` if not.
+
+```json
+{"status": "ready"}
+```
+
+### `GET /stats` — Pipeline Metrics
+
+Returns a JSON snapshot of all internal counters:
+
+```json
+{
+  "logs_received": 150000,
+  "logs_dropped_severity": 12000,
+  "logs_dropped_regex": 3400,
+  "logs_flushed_to_output": 134600,
+  "logs_sent_to_dlq": 5,
+  "es_flush_errors": 2,
+  "active_files": 3,
+  "uptime_seconds": 3600.5
+}
+```
+
+---
+
+## 💀 Dead Letter Queue
+
+Logs that fail to be delivered to Elasticsearch after all retry attempts are written to the DLQ file (`dead_letters.jsonl` by default). Each line is a JSON object containing the failure reason and the original log entry:
+
+```json
+{"dlq_reason": "max retries exhausted", "entry": {"timestamp": "...", "message": "..."}}
+```
+
+You can inspect and replay these logs later, or set up an alerting mechanism to monitor the DLQ file size.
 
 ---
 

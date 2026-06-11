@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Ketan-Chaudhary/log_aggregator/internal/metrics"
 	"github.com/Ketan-Chaudhary/log_aggregator/pkg/models"
 )
 
@@ -68,11 +69,13 @@ func (m *Manager) scanFiles(ctx context.Context) {
 				m.wg.Add(1)
 				go func(path string) {
 					defer m.wg.Done()
+					metrics.Global.ActiveFiles.Add(1)
 					err := CollectFile(fileCtx, path, m.out, m.bm)
 					if err != nil && err != context.Canceled {
 						log.Printf("Collector for %s exited with error: %v", path, err)
 					}
 
+					metrics.Global.ActiveFiles.Add(-1)
 					m.mu.Lock()
 					delete(m.activeFiles, path)
 					m.mu.Unlock()

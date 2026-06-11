@@ -13,7 +13,7 @@ type Output interface {
 }
 
 // NewOutput creates an Output based on the configuration.
-func NewOutput(cfg config.OutputConfig) (Output, error) {
+func NewOutput(cfg config.OutputConfig, dlq *DLQ) (Output, error) {
 	switch cfg.Type {
 	case "elasticsearch":
 		return NewElasticsearchOutput(
@@ -21,6 +21,7 @@ func NewOutput(cfg config.OutputConfig) (Output, error) {
 			cfg.Elasticsearch.Index,
 			cfg.Elasticsearch.BatchSize,
 			cfg.Elasticsearch.FlushPeriod,
+			dlq,
 		)
 	case "stdout":
 		return NewStdoutOutput(), nil
