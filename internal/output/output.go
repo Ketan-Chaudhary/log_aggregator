@@ -16,13 +16,9 @@ type Output interface {
 func NewOutput(cfg config.OutputConfig, dlq *DLQ) (Output, error) {
 	switch cfg.Type {
 	case "elasticsearch":
-		return NewElasticsearchOutput(
-			cfg.Elasticsearch.URLs,
-			cfg.Elasticsearch.Index,
-			cfg.Elasticsearch.BatchSize,
-			cfg.Elasticsearch.FlushPeriod,
-			dlq,
-		)
+		return NewElasticsearchOutput(cfg.Elasticsearch, dlq)
+	case "opensearch":
+		return NewOpenSearchOutput(cfg.OpenSearch, dlq)
 	case "stdout":
 		return NewStdoutOutput(), nil
 	default:

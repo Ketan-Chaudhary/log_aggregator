@@ -222,16 +222,20 @@ Settings are fully controlled via a `config.json` file. You can also override sp
 
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `type` | `string` | *required* | Output destination. Valid values: `"elasticsearch"`, `"stdout"`. |
+| `type` | `string` | *required* | Output destination. Valid values: `"elasticsearch"`, `"opensearch"`, `"stdout"`. |
 
-#### `output.elasticsearch`
+#### `output.elasticsearch` / `output.opensearch`
 
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `urls` | `string[]` | *required* | List of Elasticsearch node URLs. |
-| `index` | `string` | *required* | The Elasticsearch index name to write logs to. |
+| `urls` | `string[]` | *required* | List of Elasticsearch/OpenSearch node URLs. |
+| `index` | `string` | *required* | The index name to write logs to. |
 | `batch_size` | `int` | `100` | Number of log entries to buffer before flushing a bulk request. |
 | `flush_period_ms` | `int` | `5000` | Maximum time (in milliseconds) to wait before flushing a partial batch. |
+| `username` | `string` | `""` | Optional. Username for Basic Auth. |
+| `password` | `string` | `""` | Optional. Password for Basic Auth. |
+| `api_key` | `string` | `""` | Optional. API Key for token-based auth. |
+| `ca_cert_path` | `string` | `""` | Optional. Path to a custom root CA certificate (e.g., `/etc/ssl/certs/my_ca.crt`). |
 
 ### Processing Pipeline
 
