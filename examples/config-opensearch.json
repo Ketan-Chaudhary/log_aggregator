@@ -1,0 +1,28 @@
+{
+  "stats_port": 8080,
+  "dlq_path": "dead_letters.jsonl",
+  "collector": {
+    "paths": ["/var/log/my_app.log"],
+    "bookmark_file": "bookmarks.json"
+  },
+  "processor": {
+    "workers": 2,
+    "min_level": "INFO",
+    "labels": {
+      "cloud": "aws",
+      "region": "us-east-1"
+    },
+    "label_mode": "nested"
+  },
+  "output": {
+    "type": "opensearch",
+    "opensearch": {
+      "urls": ["https://my-domain.us-east-1.es.amazonaws.com:443"],
+      "index": "cloud-logs",
+      "username": "admin",
+      "password": "MySuperSecretPassword123!",
+      "batch_size": 100,
+      "flush_period_ms": 5000
+    }
+  }
+}

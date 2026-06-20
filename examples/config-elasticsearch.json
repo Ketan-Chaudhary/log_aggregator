@@ -1,0 +1,30 @@
+{
+  "stats_port": 8080,
+  "dlq_path": "dead_letters.jsonl",
+  "collector": {
+    "paths": ["/var/log/my_app/*.log"],
+    "bookmark_file": "bookmarks.json"
+  },
+  "processor": {
+    "workers": 4,
+    "min_level": "INFO",
+    "drop_regexes": ["healthcheck", "metric_ping"],
+    "labels": {
+      "environment": "production",
+      "service": "api-gateway"
+    },
+    "label_mode": "flattened",
+    "regex_patterns": [
+      "(?P<timestamp>\\S+ \\S+) \\[(?P<level>[A-Z]+)\\] (?P<msg>.*)"
+    ]
+  },
+  "output": {
+    "type": "elasticsearch",
+    "elasticsearch": {
+      "urls": ["http://127.0.0.1:9200", "http://127.0.0.1:9201"],
+      "index": "api-gateway-logs",
+      "batch_size": 250,
+      "flush_period_ms": 3000
+    }
+  }
+}
