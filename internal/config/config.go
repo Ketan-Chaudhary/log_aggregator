@@ -31,8 +31,19 @@ type ProcessorConfig struct {
 }
 
 type OutputConfig struct {
-	Type          string   `json:"type"` // "elasticsearch", "stdout"
+	Type          string   `json:"type"` // "elasticsearch", "opensearch", "stdout"
 	Elasticsearch ESConfig `json:"elasticsearch"`
+	OpenSearch    OSConfig `json:"opensearch"`
+}
+
+type OSConfig struct {
+	URLs        []string      `json:"urls"`
+	Index       string        `json:"index"`
+	BatchSize   int           `json:"batch_size"`
+	FlushPeriod time.Duration `json:"flush_period_ms"`
+	Username    string        `json:"username"`
+	Password    string        `json:"password"`
+	CACertPath  string        `json:"ca_cert_path"`
 }
 
 type ESConfig struct {
@@ -40,6 +51,10 @@ type ESConfig struct {
 	Index       string        `json:"index"`
 	BatchSize   int           `json:"batch_size"`
 	FlushPeriod time.Duration `json:"flush_period_ms"`
+	Username    string        `json:"username"`
+	Password    string        `json:"password"`
+	APIKey      string        `json:"api_key"`
+	CACertPath  string        `json:"ca_cert_path"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -76,8 +91,15 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Output.Elasticsearch.FlushPeriod == 0 {
 		cfg.Output.Elasticsearch.FlushPeriod = 5000 // default 5 seconds
 	}
+	if cfg.Output.OpenSearch.BatchSize == 0 {
+		cfg.Output.OpenSearch.BatchSize = 100
+	}
+	if cfg.Output.OpenSearch.FlushPeriod == 0 {
+		cfg.Output.OpenSearch.FlushPeriod = 5000 // default 5 seconds
+	}
 	// Convert milliseconds to duration
 	cfg.Output.Elasticsearch.FlushPeriod = cfg.Output.Elasticsearch.FlushPeriod * time.Millisecond
+	cfg.Output.OpenSearch.FlushPeriod = cfg.Output.OpenSearch.FlushPeriod * time.Millisecond
 
 	// Normalize and validate MinLevel
 	if cfg.Processor.MinLevel != "" {

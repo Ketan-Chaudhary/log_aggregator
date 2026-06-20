@@ -14,12 +14,12 @@ import (
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/config"
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/metrics"
 	"github.com/Ketan-Chaudhary/log_aggregator/pkg/models"
-	"github.com/elastic/go-elasticsearch/v9"
-	"github.com/elastic/go-elasticsearch/v9/esapi"
+	"github.com/opensearch-project/opensearch-go/v4"
+	"github.com/opensearch-project/opensearch-go/v4/opensearchapi"
 )
 
-type ElasticsearchOutput struct {
-	client      *elasticsearch.Client
+type OpenSearchOutput struct {
+	client      *opensearch.Client
 	index       string
 	batchSize   int
 	flushPeriod time.Duration
@@ -29,16 +29,15 @@ type ElasticsearchOutput struct {
 	sendQueue chan []models.LogEntry
 }
 
-func NewElasticsearchOutput(
-	cfg config.ESConfig,
+func NewOpenSearchOutput(
+	cfg config.OSConfig,
 	dlq *DLQ,
-) (*ElasticsearchOutput, error) {
+) (*OpenSearchOutput, error) {
 
-	esCfg := elasticsearch.Config{
+	osCfg := opensearch.Config{
 		Addresses: cfg.URLs,
 		Username:  cfg.Username,
 		Password:  cfg.Password,
-		APIKey:    cfg.APIKey,
 	}
 
 	if cfg.CACertPath != "" {
@@ -46,25 +45,22 @@ func NewElasticsearchOutput(
 		if err != nil {
 			return nil, fmt.Errorf("failed to read CA cert from %s: %w", cfg.CACertPath, err)
 		}
-		esCfg.CACert = cert
+		osCfg.CACert = cert
 	}
 
-	es, err := elasticsearch.NewClient(esCfg)
+	client, err := opensearch.NewClient(osCfg)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := es.Info()
+	res, err := client.Do(context.Background(), opensearchapi.InfoReq{}, nil)
 	if err != nil {
-		return nil, fmt.Errorf("error pinging ES: %s", err)
+		return nil, fmt.Errorf("error pinging OpenSearch: %s", err)
 	}
 	defer res.Body.Close()
-	if res.IsError() {
-		return nil, fmt.Errorf("ES responded with error: %s", res.String())
-	}
 
-	output := &ElasticsearchOutput{
-		client:      es,
+	output := &OpenSearchOutput{
+		client:      client,
 		index:       cfg.Index,
 		batchSize:   cfg.BatchSize,
 		flushPeriod: cfg.FlushPeriod,
@@ -80,26 +76,26 @@ func NewElasticsearchOutput(
 	return output, nil
 }
 
-func (e *ElasticsearchOutput) senderWorker(id int) {
-	defer e.wg.Done()
-	log.Printf("sender worker %d started", id)
+func (o *OpenSearchOutput) senderWorker(id int) {
+	defer o.wg.Done()
+	log.Printf("opensearch sender worker %d started", id)
 
-	for batch := range e.sendQueue {
+	for batch := range o.sendQueue {
 		log.Printf(
-			"Sender worker %d processing batch size=%d",
+			"OpenSearch worker %d processing batch size=%d",
 			id,
 			len(batch),
 		)
-		e.flush(batch)
+		o.flush(batch)
 	}
 }
 
-func (e *ElasticsearchOutput) Run(in <-chan models.LogEntry) {
+func (o *OpenSearchOutput) Run(in <-chan models.LogEntry) {
 
-	ticker := time.NewTicker(e.flushPeriod)
+	ticker := time.NewTicker(o.flushPeriod)
 	defer ticker.Stop()
 
-	batch := make([]models.LogEntry, 0, e.batchSize)
+	batch := make([]models.LogEntry, 0, o.batchSize)
 
 	for {
 		select {
@@ -109,66 +105,41 @@ func (e *ElasticsearchOutput) Run(in <-chan models.LogEntry) {
 			if !ok {
 				if len(batch) > 0 {
 					batchCopy := append([]models.LogEntry(nil), batch...)
-					e.sendQueue <- batchCopy
+					o.sendQueue <- batchCopy
 				}
-				close(e.sendQueue)
-				e.wg.Wait()
+				close(o.sendQueue)
+				o.wg.Wait()
 				return
 			}
 
 			batch = append(batch, logEntry)
 
-			log.Println("Received log")
-			log.Println("Current batch size:", len(batch))
-
-			if len(batch) >= e.batchSize {
-
+			if len(batch) >= o.batchSize {
 				batchCopy := append([]models.LogEntry(nil), batch...)
-
-				// async flush
-				e.sendQueue <- batchCopy
-
-				// reset batch
+				o.sendQueue <- batchCopy
 				batch = batch[:0]
 			}
 
 		case <-ticker.C:
-
 			if len(batch) > 0 {
-
 				batchCopy := append([]models.LogEntry(nil), batch...)
-
-				// async flush
-				e.sendQueue <- batchCopy
-
-				// reset batch
+				o.sendQueue <- batchCopy
 				batch = batch[:0]
 			}
 		}
 	}
 }
 
-type BulkResponse struct {
-	Errors bool                  `json:"errors"`
-	Items  []map[string]BulkItem `json:"items"`
-}
-
-type BulkItem struct {
-	Status int         `json:"status"`
-	Error  interface{} `json:"error,omitempty"`
-}
-
-func isRetryableStatus(status int) bool {
+func osIsRetryableStatus(status int) bool {
 	switch status {
 	case 429, 500, 502, 503, 504:
 		return true
-
 	default:
 		return false
 	}
 }
 
-func (e *ElasticsearchOutput) buildBulkBody(
+func (o *OpenSearchOutput) buildBulkBody(
 	logs []models.LogEntry,
 ) (*bytes.Buffer, error) {
 
@@ -178,7 +149,7 @@ func (e *ElasticsearchOutput) buildBulkBody(
 
 		meta := map[string]interface{}{
 			"index": map[string]interface{}{
-				"_index": e.index,
+				"_index": o.index,
 			},
 		}
 
@@ -194,7 +165,6 @@ func (e *ElasticsearchOutput) buildBulkBody(
 
 		buf.Write(metaJSON)
 		buf.WriteByte('\n')
-
 		buf.Write(dataJSON)
 		buf.WriteByte('\n')
 	}
@@ -202,7 +172,7 @@ func (e *ElasticsearchOutput) buildBulkBody(
 	return &buf, nil
 }
 
-func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
+func (o *OpenSearchOutput) flush(logs []models.LogEntry) {
 
 	if len(logs) == 0 {
 		return
@@ -218,17 +188,16 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 			5*time.Second,
 		)
 
-		buf, buildErr := e.buildBulkBody(logs)
+		buf, buildErr := o.buildBulkBody(logs)
 		if buildErr != nil {
 			log.Println("failed to build bulk request:", buildErr)
 			cancel()
 			return
 		}
 
-		res, err := e.client.Bulk(
-			bytes.NewReader(buf.Bytes()),
-			e.client.Bulk.WithContext(ctx),
-		)
+		res, err := o.client.Do(ctx, opensearchapi.BulkReq{
+			Body: bytes.NewReader(buf.Bytes()),
+		}, nil)
 
 		// success or partial per-item failures on a non-error bulk response
 		if err == nil && res != nil && !res.IsError() {
@@ -236,7 +205,6 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 
 			if decodeErr := json.NewDecoder(res.Body).Decode(&bulkResp); decodeErr != nil {
 				log.Println("failed to decode bulk response:", decodeErr)
-
 				res.Body.Close()
 				cancel()
 				return
@@ -248,7 +216,7 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 			// complete success
 			if !bulkResp.Errors {
 				log.Printf(
-					"successfully flushed batch of size %d",
+					"successfully flushed batch of size %d to OpenSearch",
 					len(logs),
 				)
 				return
@@ -272,21 +240,20 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 						result.Error,
 					)
 
-					if isRetryableStatus(status) {
+					if osIsRetryableStatus(status) {
 						if idx < len(logs) {
 							retryLogs = append(retryLogs, logs[idx])
 						}
 					} else {
 						// Non-retryable: send to DLQ
-						if e.dlq != nil && idx < len(logs) {
-							e.dlq.Write(logs[idx], fmt.Sprintf("non-retryable ES error: status=%d", status))
+						if o.dlq != nil && idx < len(logs) {
+							o.dlq.Write(logs[idx], fmt.Sprintf("non-retryable OpenSearch error: status=%d", status))
 						}
 						droppedCount++
 					}
 				}
 			}
 
-			// if everything failed
 			if len(retryLogs) == 0 {
 				msg := "no retryable documents left"
 				if droppedCount > 0 {
@@ -297,7 +264,6 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 				return
 			}
 
-			// log dropped documents when retrying
 			if droppedCount > 0 {
 				log.Printf(
 					"permanently dropped %d documents with non-retryable failures",
@@ -305,7 +271,6 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 				)
 			}
 
-			// retry only failed docs
 			log.Printf(
 				"retrying %d failed documents",
 				len(retryLogs),
@@ -314,7 +279,7 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 			continue
 		}
 
-		// detailed ES error logging
+		// detailed OS error logging
 		if res != nil && res.IsError() {
 			log.Printf(
 				"bulk request failed: status=%s body=%s",
@@ -330,32 +295,26 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 			)
 		}
 
-		// cleanup
 		if res != nil {
 			res.Body.Close()
 		}
-
 		cancel()
 
-		// retry decision
-		if !shouldRetry(res, err) {
+		if !osShouldRetry(res, err) {
 			log.Println("non-retryable error, sending batch to DLQ")
-			metrics.Global.ESFlushErrors.Add(1)
-			e.sendToDLQ(logs, "non-retryable bulk request error")
+			metrics.Global.ESFlushErrors.Add(1) // we can reuse the same counter or create OSFlushErrors
+			o.sendToDLQ(logs, "non-retryable bulk request error")
 			return
 		}
 
-		// max retries reached
 		if attempt == maxRetries {
 			log.Println("max retries reached, sending batch to DLQ")
 			metrics.Global.ESFlushErrors.Add(1)
-			e.sendToDLQ(logs, "max retries exhausted")
+			o.sendToDLQ(logs, "max retries exhausted")
 			return
 		}
 
-		// exponential backoff + jitter
 		jitter := time.Duration(rand.Intn(250)) * time.Millisecond
-
 		delay := (baseDelay * time.Duration(1<<(attempt-1))) + jitter
 
 		log.Printf(
@@ -364,38 +323,31 @@ func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
 			attempt,
 			maxRetries,
 		)
-
 		time.Sleep(delay)
 	}
 }
 
-func shouldRetry(res *esapi.Response, err error) bool {
-
-	// retry network failures
+func osShouldRetry(res *opensearch.Response, err error) bool {
 	if err != nil {
 		return true
 	}
-
 	if res == nil {
 		return false
 	}
-
 	switch res.StatusCode {
-
 	case 429, 500, 502, 503, 504:
 		return true
-
 	default:
 		return false
 	}
 }
 
-func (e *ElasticsearchOutput) sendToDLQ(logs []models.LogEntry, reason string) {
-	if e.dlq == nil {
+func (o *OpenSearchOutput) sendToDLQ(logs []models.LogEntry, reason string) {
+	if o.dlq == nil {
 		log.Printf("DLQ not configured, permanently dropping %d logs", len(logs))
 		return
 	}
 	for _, entry := range logs {
-		e.dlq.Write(entry, reason)
+		o.dlq.Write(entry, reason)
 	}
 }

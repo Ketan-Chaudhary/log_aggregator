@@ -5,6 +5,7 @@ go 1.26.1
 require (
 	github.com/elastic/go-elasticsearch/v9 v9.3.1
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/opensearch-project/opensearch-go/v4 v4.6.0
 )
 
 require (
