@@ -9,11 +9,13 @@ import (
 )
 
 type Config struct {
-	Collector CollectorConfig `json:"collector"`
-	Processor ProcessorConfig `json:"processor"`
-	Output    OutputConfig    `json:"output"`
-	StatsPort int             `json:"stats_port"`
-	DLQPath   string          `json:"dlq_path"`
+	Collector  CollectorConfig  `json:"collector"`
+	Processor  ProcessorConfig  `json:"processor"`
+	Output     OutputConfig     `json:"output"`
+	StatsPort  int              `json:"stats_port"`
+	DLQPath    string           `json:"dlq_path"`
+	LogLevel   string           `json:"log_level"`
+	BufferSize int              `json:"buffer_size"`
 }
 
 type CollectorConfig struct {
@@ -31,9 +33,9 @@ type ProcessorConfig struct {
 }
 
 type OutputConfig struct {
-	Type          string   `json:"type"` // "elasticsearch", "opensearch", "stdout", "file"
-	Elasticsearch ESConfig `json:"elasticsearch"`
-	OpenSearch    OSConfig `json:"opensearch"`
+	Type          string     `json:"type"` // "elasticsearch", "opensearch", "stdout", "file"
+	Elasticsearch ESConfig   `json:"elasticsearch"`
+	OpenSearch    OSConfig   `json:"opensearch"`
 	File          FileConfig `json:"file"`
 }
 
@@ -82,6 +84,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.DLQPath == "" {
 		cfg.DLQPath = "dead_letters.jsonl"
+	}
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = "INFO"
+	}
+	if cfg.BufferSize == 0 {
+		cfg.BufferSize = 1000
 	}
 	if cfg.Processor.Workers == 0 {
 		cfg.Processor.Workers = 2
@@ -133,5 +141,53 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid label_mode in config: %q (valid: nested, flattened)", cfg.Processor.LabelMode)
 	}
 
+	// Run structural validation
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	return &cfg, nil
+}
+
+// Validate checks that the config is structurally valid beyond just defaults.
+// It catches misconfigurations that would otherwise cause silent failures or panics at runtime.
+func (c *Config) Validate() error {
+	// Collector must have at least one path
+	if len(c.Collector.Paths) == 0 {
+		return fmt.Errorf("config validation: collector.paths must contain at least one path")
+	}
+
+	// Output type must be set
+	if c.Output.Type == "" {
+		return fmt.Errorf("config validation: output.type must be set (elasticsearch, opensearch, stdout, file)")
+	}
+
+	// Validate backend-specific fields
+	switch c.Output.Type {
+	case "elasticsearch":
+		if len(c.Output.Elasticsearch.URLs) == 0 {
+			return fmt.Errorf("config validation: elasticsearch.urls must not be empty when output type is 'elasticsearch'")
+		}
+		if c.Output.Elasticsearch.Index == "" {
+			return fmt.Errorf("config validation: elasticsearch.index must not be empty when output type is 'elasticsearch'")
+		}
+	case "opensearch":
+		if len(c.Output.OpenSearch.URLs) == 0 {
+			return fmt.Errorf("config validation: opensearch.urls must not be empty when output type is 'opensearch'")
+		}
+		if c.Output.OpenSearch.Index == "" {
+			return fmt.Errorf("config validation: opensearch.index must not be empty when output type is 'opensearch'")
+		}
+	case "stdout", "file":
+		// No additional validation required
+	default:
+		return fmt.Errorf("config validation: unknown output type %q (valid: elasticsearch, opensearch, stdout, file)", c.Output.Type)
+	}
+
+	// Buffer size must be positive
+	if c.BufferSize <= 0 {
+		return fmt.Errorf("config validation: buffer_size must be positive, got %d", c.BufferSize)
+	}
+
+	return nil
 }

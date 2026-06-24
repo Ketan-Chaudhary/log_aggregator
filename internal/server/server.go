@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -45,9 +45,9 @@ func (s *Server) SetReady(ready bool) {
 // It shuts down gracefully when the context is cancelled.
 func (s *Server) Start(ctx context.Context) {
 	go func() {
-		log.Printf("Stats server listening on %s", s.httpServer.Addr)
+		slog.Info("Stats server listening", "addr", s.httpServer.Addr)
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Stats server error: %v", err)
+			slog.Error("Stats server error", "error", err)
 		}
 	}()
 
@@ -56,7 +56,7 @@ func (s *Server) Start(ctx context.Context) {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("Stats server shutdown error: %v", err)
+			slog.Error("Stats server shutdown error", "error", err)
 		}
 	}()
 }

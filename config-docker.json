@@ -1,6 +1,8 @@
 {
   "stats_port": 8080,
   "dlq_path": "/var/log/aggregator/dead_letters.jsonl",
+  "log_level": "INFO",
+  "buffer_size": 1000,
   "collector": {
     "paths": ["/var/log/aggregator/*.log"],
     "bookmark_file": "/var/log/aggregator/bookmarks-docker.json"

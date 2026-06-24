@@ -3,7 +3,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -47,7 +47,7 @@ func (bm *BookmarkManager) StartPeriodicFlush(ctx context.Context, interval time
 		select {
 		case <-ctx.Done():
 			if err := bm.Flush(); err != nil {
-				log.Printf("Failed final bookmark flush: %v", err)
+				slog.Error("Failed final bookmark flush", "error", err)
 			}
 			return
 		case <-ticker.C:
@@ -56,7 +56,7 @@ func (bm *BookmarkManager) StartPeriodicFlush(ctx context.Context, interval time
 			bm.mu.Unlock()
 			if dirty {
 				if err := bm.Flush(); err != nil {
-					log.Printf("Failed periodic bookmark flush: %v", err)
+					slog.Error("Failed periodic bookmark flush", "error", err)
 				}
 			}
 		}

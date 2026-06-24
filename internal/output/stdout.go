@@ -1,6 +1,7 @@
 package output
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,7 +15,7 @@ func NewStdoutOutput() *StdoutOutput {
 	return &StdoutOutput{}
 }
 
-func (s *StdoutOutput) Run(in <-chan models.LogEntry) {
+func (s *StdoutOutput) Run(_ context.Context, in <-chan models.LogEntry) {
 	for logEntry := range in {
 		data, err := json.Marshal(logEntry)
 		if err != nil {

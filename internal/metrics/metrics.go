@@ -14,6 +14,7 @@ type Stats struct {
 	LogsSentToDLQ       atomic.Int64
 	ESFlushErrors       atomic.Int64
 	ActiveFiles         atomic.Int64
+	BackpressureDrops   atomic.Int64
 	StartTime           time.Time
 }
 
@@ -31,6 +32,7 @@ type Snapshot struct {
 	LogsSentToDLQ       int64   `json:"logs_sent_to_dlq"`
 	ESFlushErrors       int64   `json:"es_flush_errors"`
 	ActiveFiles         int64   `json:"active_files"`
+	BackpressureDrops   int64   `json:"backpressure_drops"`
 	UptimeSeconds       float64 `json:"uptime_seconds"`
 }
 
@@ -43,6 +45,7 @@ func (s *Stats) Snapshot() Snapshot {
 		LogsSentToDLQ:       s.LogsSentToDLQ.Load(),
 		ESFlushErrors:       s.ESFlushErrors.Load(),
 		ActiveFiles:         s.ActiveFiles.Load(),
+		BackpressureDrops:   s.BackpressureDrops.Load(),
 		UptimeSeconds:       time.Since(s.StartTime).Seconds(),
 	}
 }
