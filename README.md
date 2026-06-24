@@ -118,6 +118,32 @@ go mod tidy
 go build -o log_aggregator cmd/main.go
 ```
 
+### 🐳 Docker & Docker Compose Setup
+
+For instant local testing and deployment, a `docker-compose.yml` is provided to spin up Elasticsearch, Kibana, OpenSearch, OpenSearch Dashboards, and the Log Aggregator all together.
+
+1. **Boot all services**:
+   ```bash
+   docker compose up --build -d
+   ```
+   This will spin up:
+   * **Elasticsearch** (Port `9200`)
+   * **Kibana** (Port `5601`)
+   * **OpenSearch** (Port `9201` mapped to internal `9200`)
+   * **OpenSearch Dashboards** (Port `5602` mapped to internal `5601`)
+   * **Log Aggregator** (exposing `/stats` on Port `8080`)
+
+2. **Ingest logs**:
+   Any log files matching the glob pattern inside the host directory `./shared_logs` will be tailed. For example:
+   ```bash
+   echo '{"level":"INFO", "msg":"Hello from Docker!", "timestamp":"2026-06-24T12:00:00Z"}' >> ./shared_logs/app.log
+   ```
+
+3. **Configure output**:
+   By default, the Log Aggregator service runs with `config.json` (pointing to `stdout`). If you want the aggregator container to write directly to Elasticsearch or OpenSearch, edit the volumes in `docker-compose.yml` to mount the docker-specific configurations:
+   * For Elasticsearch: Change `./config.json:/app/config.json` to `./examples/config-docker-elasticsearch.json:/app/config.json`
+   * For OpenSearch: Change `./config.json:/app/config.json` to `./examples/config-docker-opensearch.json:/app/config.json`
+
 ---
 
 ## 💻 Usage
@@ -222,7 +248,15 @@ Settings are fully controlled via a `config.json` file. You can also override sp
 
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `type` | `string` | *required* | Output destination. Valid values: `"elasticsearch"`, `"opensearch"`, `"stdout"`. |
+| `type` | `string` | *required* | Output destination. Valid values: `"elasticsearch"`, `"opensearch"`, `"stdout"`, `"file"`. |
+
+#### `output.file`
+
+| Key | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `path` | `string` | `"aggregator_output.jsonl"` | File path where logs should be written. |
+| `max_size_mb` | `int64` | `10` | Maximum size in Megabytes of the log file before it rotates. |
+| `max_backups` | `int` | `5` | Maximum number of rotated backup log files to retain. |
 
 #### `output.elasticsearch` / `output.opensearch`
 

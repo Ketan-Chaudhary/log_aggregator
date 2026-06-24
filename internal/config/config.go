@@ -31,9 +31,16 @@ type ProcessorConfig struct {
 }
 
 type OutputConfig struct {
-	Type          string   `json:"type"` // "elasticsearch", "opensearch", "stdout"
+	Type          string   `json:"type"` // "elasticsearch", "opensearch", "stdout", "file"
 	Elasticsearch ESConfig `json:"elasticsearch"`
 	OpenSearch    OSConfig `json:"opensearch"`
+	File          FileConfig `json:"file"`
+}
+
+type FileConfig struct {
+	Path       string `json:"path"`
+	MaxSizeMB  int64  `json:"max_size_mb"`
+	MaxBackups int    `json:"max_backups"`
 }
 
 type OSConfig struct {
@@ -100,6 +107,17 @@ func LoadConfig(path string) (*Config, error) {
 	// Convert milliseconds to duration
 	cfg.Output.Elasticsearch.FlushPeriod = cfg.Output.Elasticsearch.FlushPeriod * time.Millisecond
 	cfg.Output.OpenSearch.FlushPeriod = cfg.Output.OpenSearch.FlushPeriod * time.Millisecond
+
+	// Apply file defaults
+	if cfg.Output.File.Path == "" {
+		cfg.Output.File.Path = "aggregator_output.jsonl"
+	}
+	if cfg.Output.File.MaxSizeMB == 0 {
+		cfg.Output.File.MaxSizeMB = 10
+	}
+	if cfg.Output.File.MaxBackups == 0 {
+		cfg.Output.File.MaxBackups = 5
+	}
 
 	// Normalize and validate MinLevel
 	if cfg.Processor.MinLevel != "" {

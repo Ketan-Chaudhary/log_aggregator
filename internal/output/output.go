@@ -21,6 +21,8 @@ func NewOutput(cfg config.OutputConfig, dlq *DLQ) (Output, error) {
 		return NewOpenSearchOutput(cfg.OpenSearch, dlq)
 	case "stdout":
 		return NewStdoutOutput(), nil
+	case "file":
+		return NewFileOutput(cfg.File)
 	default:
 		return nil, fmt.Errorf("unknown output type: %s", cfg.Type)
 	}
