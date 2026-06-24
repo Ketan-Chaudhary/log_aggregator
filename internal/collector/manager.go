@@ -2,7 +2,7 @@ package collector
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"path/filepath"
 	"sync"
 	"time"
@@ -55,13 +55,13 @@ func (m *Manager) scanFiles(ctx context.Context) {
 	for _, pattern := range m.paths {
 		matches, err := filepath.Glob(pattern)
 		if err != nil {
-			log.Printf("Error resolving glob %s: %v", pattern, err)
+			slog.Error("Error resolving glob pattern", "pattern", pattern, "error", err)
 			continue
 		}
 
 		for _, match := range matches {
 			if _, active := m.activeFiles[match]; !active {
-				log.Printf("Starting collector for new file: %s", match)
+				slog.Info("Starting collector for new file", "file", match)
 
 				fileCtx, cancel := context.WithCancel(ctx)
 				m.activeFiles[match] = cancel
@@ -72,7 +72,7 @@ func (m *Manager) scanFiles(ctx context.Context) {
 					metrics.Global.ActiveFiles.Add(1)
 					err := CollectFile(fileCtx, path, m.out, m.bm)
 					if err != nil && err != context.Canceled {
-						log.Printf("Collector for %s exited with error: %v", path, err)
+						slog.Error("Collector exited with error", "file", path, "error", err)
 					}
 
 					metrics.Global.ActiveFiles.Add(-1)

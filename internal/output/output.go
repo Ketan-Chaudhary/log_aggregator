@@ -1,6 +1,7 @@
 package output
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/config"
@@ -9,7 +10,7 @@ import (
 
 // Output defines the interface for all log destinations.
 type Output interface {
-	Run(in <-chan models.LogEntry)
+	Run(ctx context.Context, in <-chan models.LogEntry)
 }
 
 // NewOutput creates an Output based on the configuration.

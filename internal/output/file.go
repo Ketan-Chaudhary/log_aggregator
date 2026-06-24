@@ -1,6 +1,7 @@
 package output
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -72,7 +73,7 @@ func (fo *FileOutput) openFile() error {
 	return nil
 }
 
-func (fo *FileOutput) Run(in <-chan models.LogEntry) {
+func (fo *FileOutput) Run(_ context.Context, in <-chan models.LogEntry) {
 	defer func() {
 		fo.mu.Lock()
 		if fo.file != nil {

@@ -1,6 +1,7 @@
 package output
 
 import (
+	"context"
 	"encoding/json"
 	"io/ioutil"
 	"os"
@@ -40,7 +41,7 @@ func TestFileOutput_RotationAndCleanup(t *testing.T) {
 	// Start file output runner in a separate goroutine
 	done := make(chan struct{})
 	go func() {
-		fo.Run(logChan)
+		fo.Run(context.Background(), logChan)
 		close(done)
 	}()
 

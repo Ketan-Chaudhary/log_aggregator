@@ -3,7 +3,7 @@ package output
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"sync"
 
@@ -26,7 +26,7 @@ func NewDLQ(path string) (*DLQ, error) {
 		return nil, fmt.Errorf("failed to open DLQ file %s: %w", path, err)
 	}
 
-	log.Printf("Dead Letter Queue initialized at %s", path)
+	slog.Info("Dead Letter Queue initialized", "path", path)
 	return &DLQ{file: f, path: path}, nil
 }
 
@@ -45,13 +45,13 @@ func (d *DLQ) Write(entry models.LogEntry, reason string) {
 
 	data, err := json.Marshal(record)
 	if err != nil {
-		log.Printf("DLQ: failed to marshal entry: %v", err)
+		slog.Error("DLQ: failed to marshal entry", "error", err)
 		return
 	}
 
 	data = append(data, '\n')
 	if _, err := d.file.Write(data); err != nil {
-		log.Printf("DLQ: failed to write entry: %v", err)
+		slog.Error("DLQ: failed to write entry", "error", err)
 		return
 	}
 

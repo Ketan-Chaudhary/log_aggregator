@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/collector"
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/config"
+	"github.com/Ketan-Chaudhary/log_aggregator/internal/logger"
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/output"
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/processor"
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/server"
@@ -30,6 +32,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config from %s: %v", *configPath, err)
 	}
+
+	// Initialize structured logger
+	logger.Setup(cfg.LogLevel)
 
 	// Override config with CLI flags if provided
 	if *filePath != "" {
@@ -49,14 +54,15 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		log.Println("Received termination signal, shutting down...")
+		slog.Info("Received termination signal, shutting down...")
 		cancel()
 	}()
 
 	// Initialize Dead Letter Queue
 	dlq, err := output.NewDLQ(cfg.DLQPath)
 	if err != nil {
-		log.Fatalf("Failed to initialize DLQ: %v", err)
+		slog.Error("Failed to initialize DLQ", "error", err)
+		os.Exit(1)
 	}
 	defer dlq.Close()
 
@@ -64,13 +70,14 @@ func main() {
 	statsServer := server.New(fmt.Sprintf(":%d", cfg.StatsPort))
 	statsServer.Start(ctx)
 
-	rawLogs := make(chan models.LogEntry, 100)
-	processedLogs := make(chan models.LogEntry, 100)
+	rawLogs := make(chan models.LogEntry, cfg.BufferSize)
+	processedLogs := make(chan models.LogEntry, cfg.BufferSize)
 
 	// Initialize BookmarkManager
 	bm, err := collector.NewBookmarkManager(cfg.Collector.BookmarkFile)
 	if err != nil {
-		log.Fatalf("Failed to initialize bookmark manager: %v", err)
+		slog.Error("Failed to initialize bookmark manager", "error", err)
+		os.Exit(1)
 	}
 
 	// Start periodic bookmark flushing (every 5 seconds, final flush on shutdown)
@@ -95,16 +102,17 @@ func main() {
 	// Start Output
 	out, err := output.NewOutput(cfg.Output, dlq)
 	if err != nil {
-		log.Fatalf("Failed to initialize output: %v", err)
+		slog.Error("Failed to initialize output", "error", err)
+		os.Exit(1)
 	}
 
 	// Mark service as ready
 	statsServer.SetReady(true)
 
-	log.Println("Log aggregator started successfully. Press Ctrl+C to stop.")
+	slog.Info("Log aggregator started successfully. Press Ctrl+C to stop.")
 
 	// Blocks until processedLogs is closed
-	out.Run(processedLogs)
+	out.Run(ctx, processedLogs)
 
-	log.Println("Shutdown complete.")
+	slog.Info("Shutdown complete.")
 }

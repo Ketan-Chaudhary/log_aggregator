@@ -5,28 +5,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-	"math/rand"
+	"log/slog"
 	"os"
-	"sync"
-	"time"
 
 	"github.com/Ketan-Chaudhary/log_aggregator/internal/config"
-	"github.com/Ketan-Chaudhary/log_aggregator/internal/metrics"
 	"github.com/Ketan-Chaudhary/log_aggregator/pkg/models"
 	"github.com/elastic/go-elasticsearch/v9"
 	"github.com/elastic/go-elasticsearch/v9/esapi"
 )
 
+// ElasticsearchOutput sends logs to Elasticsearch using the Bulk API.
+// It delegates batching and retry logic to a shared BatchSender.
 type ElasticsearchOutput struct {
-	client      *elasticsearch.Client
-	index       string
-	batchSize   int
-	flushPeriod time.Duration
-	wg          sync.WaitGroup
-	dlq         *DLQ
-
-	sendQueue chan []models.LogEntry
+	client *elasticsearch.Client
+	index  string
+	sender *BatchSender
 }
 
 func NewElasticsearchOutput(
@@ -64,90 +57,117 @@ func NewElasticsearchOutput(
 	}
 
 	output := &ElasticsearchOutput{
-		client:      es,
-		index:       cfg.Index,
-		batchSize:   cfg.BatchSize,
-		flushPeriod: cfg.FlushPeriod,
-		dlq:         dlq,
-		sendQueue:   make(chan []models.LogEntry, 100),
+		client: es,
+		index:  cfg.Index,
 	}
 
-	for i := 0; i < 3; i++ {
-		output.wg.Add(1)
-		go output.senderWorker(i)
-	}
+	output.sender = NewBatchSender(BatchSenderConfig{
+		BatchSize:   cfg.BatchSize,
+		FlushPeriod: cfg.FlushPeriod,
+		NumWorkers:  3,
+		DLQ:         dlq,
+		Flusher:     output,
+	})
 
 	return output, nil
 }
 
-func (e *ElasticsearchOutput) senderWorker(id int) {
-	defer e.wg.Done()
-	log.Printf("sender worker %d started", id)
-
-	for batch := range e.sendQueue {
-		log.Printf(
-			"Sender worker %d processing batch size=%d",
-			id,
-			len(batch),
-		)
-		e.flush(batch)
-	}
+func (e *ElasticsearchOutput) Name() string {
+	return "Elasticsearch"
 }
 
-func (e *ElasticsearchOutput) Run(in <-chan models.LogEntry) {
+func (e *ElasticsearchOutput) Run(ctx context.Context, in <-chan models.LogEntry) {
+	e.sender.Run(ctx, in)
+}
 
-	ticker := time.NewTicker(e.flushPeriod)
-	defer ticker.Stop()
+// FlushBulk implements the BulkFlusher interface.
+func (e *ElasticsearchOutput) FlushBulk(ctx context.Context, logs []models.LogEntry) (retryable []models.LogEntry, dropped int, err error) {
+	buf, buildErr := e.buildBulkBody(logs)
+	if buildErr != nil {
+		return nil, 0, fmt.Errorf("failed to build bulk request: %w", buildErr)
+	}
 
-	batch := make([]models.LogEntry, 0, e.batchSize)
+	res, err := e.client.Bulk(
+		bytes.NewReader(buf.Bytes()),
+		e.client.Bulk.WithContext(ctx),
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("bulk request network error: %w", err)
+	}
+	defer res.Body.Close()
 
-	for {
-		select {
+	if res.IsError() {
+		status := res.StatusCode
+		if isRetryableStatus(status) {
+			return logs, 0, fmt.Errorf("bulk request failed with retryable status: %s", res.Status())
+		}
+		return nil, 0, fmt.Errorf("bulk request failed with non-retryable status: %s", res.Status())
+	}
 
-		case logEntry, ok := <-in:
+	var bulkResp BulkResponse
+	if decodeErr := json.NewDecoder(res.Body).Decode(&bulkResp); decodeErr != nil {
+		return nil, 0, fmt.Errorf("failed to decode bulk response: %w", decodeErr)
+	}
 
-			if !ok {
-				if len(batch) > 0 {
-					batchCopy := append([]models.LogEntry(nil), batch...)
-					e.sendQueue <- batchCopy
+	if !bulkResp.Errors {
+		return nil, 0, nil // complete success
+	}
+
+	// Partial failures — separate retryable from non-retryable
+	for idx, item := range bulkResp.Items {
+		for _, result := range item {
+			status := result.Status
+			if status >= 200 && status < 300 {
+				continue
+			}
+
+			slog.Warn("bulk item failed",
+				"backend", "Elasticsearch",
+				"status", status,
+				"error", result.Error,
+			)
+
+			if isRetryableStatus(status) {
+				if idx < len(logs) {
+					retryable = append(retryable, logs[idx])
 				}
-				close(e.sendQueue)
-				e.wg.Wait()
-				return
-			}
-
-			batch = append(batch, logEntry)
-
-			log.Println("Received log")
-			log.Println("Current batch size:", len(batch))
-
-			if len(batch) >= e.batchSize {
-
-				batchCopy := append([]models.LogEntry(nil), batch...)
-
-				// async flush
-				e.sendQueue <- batchCopy
-
-				// reset batch
-				batch = batch[:0]
-			}
-
-		case <-ticker.C:
-
-			if len(batch) > 0 {
-
-				batchCopy := append([]models.LogEntry(nil), batch...)
-
-				// async flush
-				e.sendQueue <- batchCopy
-
-				// reset batch
-				batch = batch[:0]
+			} else {
+				if e.sender.dlq != nil && idx < len(logs) {
+					e.sender.dlq.Write(logs[idx], fmt.Sprintf("non-retryable ES error: status=%d", status))
+				}
+				dropped++
 			}
 		}
 	}
+
+	return retryable, dropped, nil
 }
 
+func (e *ElasticsearchOutput) buildBulkBody(logs []models.LogEntry) (*bytes.Buffer, error) {
+	var buf bytes.Buffer
+	for _, logEntry := range logs {
+		meta := map[string]interface{}{
+			"index": map[string]interface{}{
+				"_index": e.index,
+			},
+		}
+		metaJSON, err := json.Marshal(meta)
+		if err != nil {
+			return nil, err
+		}
+		dataJSON, err := json.Marshal(logEntry)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(metaJSON)
+		buf.WriteByte('\n')
+		buf.Write(dataJSON)
+		buf.WriteByte('\n')
+	}
+	return &buf, nil
+}
+
+// BulkResponse and BulkItem are shared types for bulk API responses.
 type BulkResponse struct {
 	Errors bool                  `json:"errors"`
 	Items  []map[string]BulkItem `json:"items"`
@@ -162,240 +182,17 @@ func isRetryableStatus(status int) bool {
 	switch status {
 	case 429, 500, 502, 503, 504:
 		return true
-
 	default:
 		return false
-	}
-}
-
-func (e *ElasticsearchOutput) buildBulkBody(
-	logs []models.LogEntry,
-) (*bytes.Buffer, error) {
-
-	var buf bytes.Buffer
-
-	for _, logEntry := range logs {
-
-		meta := map[string]interface{}{
-			"index": map[string]interface{}{
-				"_index": e.index,
-			},
-		}
-
-		metaJSON, err := json.Marshal(meta)
-		if err != nil {
-			return nil, err
-		}
-
-		dataJSON, err := json.Marshal(logEntry)
-		if err != nil {
-			return nil, err
-		}
-
-		buf.Write(metaJSON)
-		buf.WriteByte('\n')
-
-		buf.Write(dataJSON)
-		buf.WriteByte('\n')
-	}
-
-	return &buf, nil
-}
-
-func (e *ElasticsearchOutput) flush(logs []models.LogEntry) {
-
-	if len(logs) == 0 {
-		return
-	}
-
-	maxRetries := 3
-	baseDelay := 500 * time.Millisecond
-
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-
-		ctx, cancel := context.WithTimeout(
-			context.Background(),
-			5*time.Second,
-		)
-
-		buf, buildErr := e.buildBulkBody(logs)
-		if buildErr != nil {
-			log.Println("failed to build bulk request:", buildErr)
-			cancel()
-			return
-		}
-
-		res, err := e.client.Bulk(
-			bytes.NewReader(buf.Bytes()),
-			e.client.Bulk.WithContext(ctx),
-		)
-
-		// success or partial per-item failures on a non-error bulk response
-		if err == nil && res != nil && !res.IsError() {
-			var bulkResp BulkResponse
-
-			if decodeErr := json.NewDecoder(res.Body).Decode(&bulkResp); decodeErr != nil {
-				log.Println("failed to decode bulk response:", decodeErr)
-
-				res.Body.Close()
-				cancel()
-				return
-			}
-
-			res.Body.Close()
-			cancel()
-
-			// complete success
-			if !bulkResp.Errors {
-				log.Printf(
-					"successfully flushed batch of size %d",
-					len(logs),
-				)
-				return
-			}
-
-			// partial failures
-			var retryLogs []models.LogEntry
-			droppedCount := 0
-
-			for idx, item := range bulkResp.Items {
-				for _, result := range item {
-					status := result.Status
-
-					if status >= 200 && status < 300 {
-						continue
-					}
-
-					log.Printf(
-						"bulk items failed: status=%d error=%v",
-						status,
-						result.Error,
-					)
-
-					if isRetryableStatus(status) {
-						if idx < len(logs) {
-							retryLogs = append(retryLogs, logs[idx])
-						}
-					} else {
-						// Non-retryable: send to DLQ
-						if e.dlq != nil && idx < len(logs) {
-							e.dlq.Write(logs[idx], fmt.Sprintf("non-retryable ES error: status=%d", status))
-						}
-						droppedCount++
-					}
-				}
-			}
-
-			// if everything failed
-			if len(retryLogs) == 0 {
-				msg := "no retryable documents left"
-				if droppedCount > 0 {
-					log.Printf("%s, permanently dropped %d documents", msg, droppedCount)
-				} else {
-					log.Println(msg)
-				}
-				return
-			}
-
-			// log dropped documents when retrying
-			if droppedCount > 0 {
-				log.Printf(
-					"permanently dropped %d documents with non-retryable failures",
-					droppedCount,
-				)
-			}
-
-			// retry only failed docs
-			log.Printf(
-				"retrying %d failed documents",
-				len(retryLogs),
-			)
-			logs = retryLogs
-			continue
-		}
-
-		// detailed ES error logging
-		if res != nil && res.IsError() {
-			log.Printf(
-				"bulk request failed: status=%s body=%s",
-				res.Status(),
-				res.String(),
-			)
-		}
-
-		if err != nil {
-			log.Printf(
-				"bulk request network error: %v",
-				err,
-			)
-		}
-
-		// cleanup
-		if res != nil {
-			res.Body.Close()
-		}
-
-		cancel()
-
-		// retry decision
-		if !shouldRetry(res, err) {
-			log.Println("non-retryable error, sending batch to DLQ")
-			metrics.Global.ESFlushErrors.Add(1)
-			e.sendToDLQ(logs, "non-retryable bulk request error")
-			return
-		}
-
-		// max retries reached
-		if attempt == maxRetries {
-			log.Println("max retries reached, sending batch to DLQ")
-			metrics.Global.ESFlushErrors.Add(1)
-			e.sendToDLQ(logs, "max retries exhausted")
-			return
-		}
-
-		// exponential backoff + jitter
-		jitter := time.Duration(rand.Intn(250)) * time.Millisecond
-
-		delay := (baseDelay * time.Duration(1<<(attempt-1))) + jitter
-
-		log.Printf(
-			"retrying batch in %v (attempt %d/%d)",
-			delay,
-			attempt,
-			maxRetries,
-		)
-
-		time.Sleep(delay)
 	}
 }
 
 func shouldRetry(res *esapi.Response, err error) bool {
-
-	// retry network failures
 	if err != nil {
 		return true
 	}
-
 	if res == nil {
 		return false
 	}
-
-	switch res.StatusCode {
-
-	case 429, 500, 502, 503, 504:
-		return true
-
-	default:
-		return false
-	}
-}
-
-func (e *ElasticsearchOutput) sendToDLQ(logs []models.LogEntry, reason string) {
-	if e.dlq == nil {
-		log.Printf("DLQ not configured, permanently dropping %d logs", len(logs))
-		return
-	}
-	for _, entry := range logs {
-		e.dlq.Write(entry, reason)
-	}
+	return isRetryableStatus(res.StatusCode)
 }

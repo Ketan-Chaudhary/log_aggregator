@@ -1,7 +1,7 @@
 package processor
 
 import (
-	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"sync"
@@ -38,7 +38,7 @@ func getSeverity(level string) int {
 func StartWorkerPool(cfg config.ProcessorConfig, in <-chan models.LogEntry, out chan<- models.LogEntry) *sync.WaitGroup {
 	numWorkers := cfg.Workers
 	if numWorkers < 1 {
-		fmt.Println("Invalid Worker count: defaulting to 1")
+		slog.Warn("Invalid worker count, defaulting to 1", "configured", numWorkers)
 		numWorkers = 1
 	}
 
@@ -52,7 +52,7 @@ func StartWorkerPool(cfg config.ProcessorConfig, in <-chan models.LogEntry, out 
 		if re, err := regexp.Compile(pattern); err == nil {
 			runtime.ExtractRegexes = append(runtime.ExtractRegexes, re)
 		} else {
-			fmt.Printf("Failed to compile extract regex %s: %v\n", pattern, err)
+			slog.Error("Failed to compile extract regex", "pattern", pattern, "error", err)
 		}
 	}
 
@@ -60,7 +60,7 @@ func StartWorkerPool(cfg config.ProcessorConfig, in <-chan models.LogEntry, out 
 		if re, err := regexp.Compile(pattern); err == nil {
 			runtime.DropRegexes = append(runtime.DropRegexes, re)
 		} else {
-			fmt.Printf("Failed to compile drop regex %s: %v\n", pattern, err)
+			slog.Error("Failed to compile drop regex", "pattern", pattern, "error", err)
 		}
 	}
 
